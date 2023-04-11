@@ -15,6 +15,11 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, see <http://www.gnu.org/licenses/>.
+ *
+ *
+ *​​​​ Changes from Qualcomm Innovation Center are provided under the following license:
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 #ifndef VIRTIO_SND_CARD_H
 #define VIRTIO_SND_CARD_H
@@ -22,15 +27,31 @@
 #include <linux/virtio.h>
 #include <sound/core.h>
 
+#include <linux/kthread.h>
+#include <linux/sched.h>
+#include <linux/slab.h>
+
 #include "virtio_snd.h"
 #include "virtio_ctl_msg.h"
 #include "virtio_pcm.h"
 
 #include "virtio_opsy.h"
 
+#include <linux/habmm.h>
+
 struct virtio_jack;
 struct virtio_pcm_substream;
 struct virtio_kctl_ctx;
+
+struct vs_thread_struct
+{
+	int stop; /* set by creator */
+	int bexited; /* set by thread */
+	void *data; /* thread private data */
+
+	int32_t mmid;
+	int32_t hab_socket;
+};
 
 /**
  * struct virtio_snd_queue - Virtqueue wrapper structure.
@@ -40,6 +61,9 @@ struct virtio_kctl_ctx;
 struct virtio_snd_queue {
 	spinlock_t lock;
 	struct virtqueue *vqueue;
+
+	struct task_struct *kthread; /* creator's thread handle */
+	struct vs_thread_struct thread_data; /* thread private data */
 };
 
 /**

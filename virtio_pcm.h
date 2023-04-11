@@ -15,6 +15,11 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, see <http://www.gnu.org/licenses/>.
+ *
+ *
+ *​​​​ Changes from Qualcomm Innovation Center are provided under the following license:
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 #ifndef VIRTIO_SND_PCM_H
 #define VIRTIO_SND_PCM_H
@@ -25,6 +30,7 @@
 
 struct virtio_pcm;
 struct virtio_pcm_msg;
+struct virtio_snd_queue;
 
 /**
  * struct virtio_pcm_substream - virtio PCM substream representation.
@@ -57,6 +63,9 @@ struct virtio_pcm_substream {
 	int msg_last_enqueued;
 	atomic_t msg_count;
 	wait_queue_head_t msg_empty;
+
+	int export_ready; /*dma area is shared with PVM */
+	u32 export_id;
 };
 
 /**
@@ -121,5 +130,10 @@ int virtsnd_pcm_msg_alloc(struct virtio_pcm_substream *substream,
 			  unsigned int period_bytes);
 
 int virtsnd_pcm_msg_send(struct virtio_pcm_substream *substream);
+
+int vsnd_dma_area_export(struct virtio_pcm_substream *vss,
+			 unsigned char *dma_area, size_t dma_bytes,
+			 uint32_t *export_id);
+void vsnd_process_pcm_msg(struct virtio_snd_queue *queue, struct virtio_pcm_msg *msg);
 
 #endif /* VIRTIO_SND_PCM_H */

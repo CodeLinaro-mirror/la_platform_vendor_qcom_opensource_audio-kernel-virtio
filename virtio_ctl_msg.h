@@ -15,6 +15,11 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, see <http://www.gnu.org/licenses/>.
+ *
+ *
+ *​​​​ Changes from Qualcomm Innovation Center are provided under the following license:
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 #ifndef VIRTIO_SND_MSG_H
 #define VIRTIO_SND_MSG_H
@@ -36,8 +41,13 @@ struct virtio_snd;
 struct virtio_snd_msg {
 /* public: */
 	struct scatterlist sg_request;
+	size_t request_size;
+        size_t request_ext_size;
 	struct scatterlist *sg_request_ext;
 	struct scatterlist sg_response;
+	size_t response_size;
+	void * reply;
+	size_t reply_size;
 	struct scatterlist *sg_response_ext;
 /* private: internal use only */
 	struct list_head list;

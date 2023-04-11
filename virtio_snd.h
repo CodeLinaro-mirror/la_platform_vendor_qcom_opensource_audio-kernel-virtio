@@ -28,6 +28,12 @@
  * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
  * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
+ *
+ *
+ *​​​​ Changes from Qualcomm Innovation Center are provided under the following license:
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * SPDX-License-Identifier: BSD-3-Clause-Clear
+
  */
 #ifndef VIRTIO_SND_IF_H
 #define VIRTIO_SND_IF_H
@@ -124,6 +130,13 @@ enum {
 
 	/* ALSA device control events */
 	VIRTIO_SND_EVT_DC_NOTIFY = 0xff00,
+
+	/* qualcomm extensions */
+	VIRTIO_SND_R_PCM_COUNT,
+	VIRTIO_SND_R_DC_COUNT,
+
+	VIRTIO_SND_R_EXPORT_MSG,
+	VIRTIO_SND_R_PCM_MSG
 };
 
 /* common header */

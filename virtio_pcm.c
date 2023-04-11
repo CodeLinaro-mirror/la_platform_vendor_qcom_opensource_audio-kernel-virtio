@@ -15,6 +15,11 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, see <http://www.gnu.org/licenses/>.
+ *
+ *
+ *​​​​ Changes from Qualcomm Innovation Center are provided under the following license:
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 #include <linux/moduleparam.h>
 #include <linux/virtio_config.h>
@@ -294,9 +299,39 @@ int virtsnd_pcm_parse_cfg(struct virtio_snd *snd)
 	struct virtio_snd_pcm_info *info;
 	unsigned int i;
 	int rc;
+        struct virtio_snd_msg *msg;
+        struct virtio_snd_hdr *hdr;
+        struct scatterlist sg_response_ext;
+        int code;
 
-	virtio_cread(vdev, struct virtio_snd_config, streams,
-		     &snd->nsubstreams);
+        __le32 *count = devm_kzalloc(&vdev->dev, sizeof(*count), GFP_KERNEL);
+
+        msg = virtsnd_ctl_msg_alloc(vdev, sizeof(*hdr),
+                                    sizeof(struct virtio_snd_hdr), GFP_KERNEL);
+
+        if (IS_ERR(msg)) {
+                devm_kfree(&vdev->dev, count);
+                return PTR_ERR(msg);
+        }
+
+        hdr = sg_virt(&msg->sg_request);
+        hdr->code = cpu_to_virtio32(vdev, VIRTIO_SND_R_PCM_COUNT);
+
+        sg_init_one(&sg_response_ext, count, sizeof(*count));
+        msg->sg_response_ext = &sg_response_ext;
+        msg->reply = count;
+        msg->reply_size = sizeof(*count);
+
+        code = virtsnd_ctl_msg_send_sync(snd, msg);
+        if (code) {
+                dev_err(&vdev->dev, "failed to query pcm count: %d\n",
+                         code);
+                devm_kfree(&vdev->dev, count);
+                return code;
+        }
+
+        snd->nsubstreams = *count;
+
 	if (!snd->nsubstreams)
 		return 0;
 

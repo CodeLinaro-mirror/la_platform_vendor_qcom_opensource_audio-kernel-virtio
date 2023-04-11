@@ -15,6 +15,11 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, see <http://www.gnu.org/licenses/>.
+ *
+ *
+ *​​​​ Changes from Qualcomm Innovation Center are provided under the following license:
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 #include <linux/virtio_config.h>
 #include <sound/jack.h>
@@ -109,7 +114,7 @@ int virtsnd_jack_parse_cfg(struct virtio_snd *snd)
 	unsigned int i;
 	struct virtio_snd_jack_info *info;
 
-	virtio_cread(vdev, struct virtio_snd_config, jacks, &snd->njacks);
+	snd->njacks = 1; // hardcoded for now
 	if (!snd->njacks)
 		return 0;
 

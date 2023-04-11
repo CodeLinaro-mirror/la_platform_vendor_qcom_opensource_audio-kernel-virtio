@@ -15,6 +15,11 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, see <http://www.gnu.org/licenses/>.
+ *
+ *
+ *​​​​ Changes from Qualcomm Innovation Center are provided under the following license:
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 #include <sound/control.h>
 #include <linux/virtio_config.h>
@@ -55,6 +60,8 @@ struct virtio_snd_dc_info {
 	struct virtio_snd_info hdr;
 	struct snd_ctl_elem_info elem_info;
 };
+
+DECLARE_COMPLETION(dc_setup_done);
 
 static int virtsnd_dc_info(struct snd_kcontrol *kcontrol,
 			   struct snd_ctl_elem_info *uinfo)
@@ -105,6 +112,9 @@ static int virtsnd_dc_get(struct snd_kcontrol *kcontrol,
 	sg_init_one(&sg, ucontrol, sizeof(*ucontrol));
 	msg->sg_response_ext = &sg;
 
+        msg->reply = ucontrol;
+        msg->reply_size = sizeof(*ucontrol);
+
 	return virtsnd_ctl_msg_send_sync(snd, msg);
 }
 
@@ -130,6 +140,8 @@ static int virtsnd_dc_put(struct snd_kcontrol *kcontrol,
 
 	sg_init_one(&sg, ucontrol, sizeof(*ucontrol));
 	msg->sg_request_ext = &sg;
+
+        msg->request_ext_size = sizeof(*ucontrol);
 
 	return virtsnd_ctl_msg_send_sync(snd, msg);
 }
@@ -181,6 +193,8 @@ static int virtsnd_dc_tlv_op(struct snd_kcontrol *kcontrol, int op_flag,
 	if (cmd == VIRTIO_SND_R_DC_TLV_READ) {
 		sg_init_one(&sg_response_ext, tlv, size);
 		msg->sg_response_ext = &sg_response_ext;
+		msg->reply = tlv;
+		msg->reply_size = size;
 	} else {
 		if (copy_from_user(tlv, utlv, size)) {
 			code = -EFAULT;
@@ -189,6 +203,7 @@ static int virtsnd_dc_tlv_op(struct snd_kcontrol *kcontrol, int op_flag,
 
 		sg_init_one(&sg_request_ext, tlv, size);
 		msg->sg_request_ext = &sg_request_ext;
+		msg->request_ext_size = size;
 	}
 
 	code = virtsnd_ctl_msg_send_sync(snd, msg);
@@ -233,6 +248,8 @@ static int virtsnd_dc_query_enum_info(struct virtio_snd *snd, unsigned int cid,
 	sg_init_one(&sg_response_ext, values, nvalues * sizeof(*values));
 	msg->sg_response_ext = &sg_response_ext;
 
+        msg->reply = values;
+        msg->reply_size = nvalues * sizeof(*values);
 	code = virtsnd_ctl_msg_send_sync(snd, msg);
 	if (code) {
 		dev_warn(&vdev->dev,
@@ -260,26 +277,27 @@ static void virtsnd_dc_work(struct work_struct *work)
 				SNDRV_CTL_ELEM_ACCESS_TLV_COMMAND;
 	int code;
 
-	info = devm_kcalloc(&vdev->dev, ctx->nkctls, sizeof(*info), GFP_KERNEL);
-	if (!info)
-		return;
-
-	code = virtsnd_ctl_query_info(snd, VIRTIO_SND_R_DC_INFO, 0, ctx->nkctls,
-				      sizeof(*info), info);
-	if (code) {
-		dev_warn(&vdev->dev,
-			 "Failed to query control element information: %d\n",
-			 code);
-		devm_kfree(&vdev->dev, info);
-		return;
-	}
-
 	for (i = 0; i < ctx->nkctls; ++i) {
-		struct virtio_kctl *kctl = &ctx->kctls[i];
-		struct snd_ctl_elem_info *elem_info = &info[i].elem_info;
+		struct virtio_kctl *kctl;
+		struct snd_ctl_elem_info *elem_info;
 		struct snd_kcontrol_new kctl_new;
+		info = devm_kcalloc(&vdev->dev, 1, sizeof(*info), GFP_KERNEL);
+		if (!info)
+			return;
 
-		kctl->info = &info[i];
+		code = virtsnd_ctl_query_info(snd, VIRTIO_SND_R_DC_INFO, i, 1,
+					      sizeof(*info), info);
+		if (code) {
+			dev_warn(&vdev->dev,
+				 "Failed to query control element information: %d\n",
+				 code);
+			devm_kfree(&vdev->dev, info);
+			return;
+		}
+
+		kctl = &ctx->kctls[i];
+		elem_info = &info->elem_info;
+		kctl->info = info;
 
 		if (elem_info->type == SNDRV_CTL_ELEM_TYPE_ENUMERATED) {
 			unsigned int nvalues =
@@ -294,7 +312,7 @@ static void virtsnd_dc_work(struct work_struct *work)
 
 		kctl_new.iface = elem_info->id.iface;
 		if (kctl_new.iface == SNDRV_CTL_ELEM_IFACE_PCM)
-			kctl_new.device = le32_to_cpu(info[i].hdr.hda_fn_nid);
+			kctl_new.device = le32_to_cpu(info->hdr.hda_fn_nid);
 
 		kctl_new.name = elem_info->id.name;
 		kctl_new.index = elem_info->id.index;
@@ -330,6 +348,7 @@ static void virtsnd_dc_work(struct work_struct *work)
 	}
 
 	atomic_set(&ctx->events_enabled, 1);
+	complete(&dc_setup_done);
 }
 
 int virtsnd_dc_parse_cfg(struct virtio_snd *snd)
@@ -337,8 +356,38 @@ int virtsnd_dc_parse_cfg(struct virtio_snd *snd)
 	struct virtio_device *vdev = snd->vdev;
 	struct virtio_kctl_ctx *ctx;
 	unsigned int nkctls;
+	struct virtio_snd_msg *msg;
+	struct virtio_snd_hdr *hdr;
+	struct scatterlist sg_response_ext;
+	int code;
 
-	virtio_cread(vdev, struct virtio_snd_config, controls, &nkctls);
+	__le32 *count = devm_kzalloc(&vdev->dev, sizeof(*count), GFP_KERNEL);
+
+	msg = virtsnd_ctl_msg_alloc(vdev, sizeof(*hdr),
+				    sizeof(struct virtio_snd_hdr), GFP_KERNEL);
+
+	if (IS_ERR(msg)) {
+		devm_kfree(&vdev->dev, count);
+		return PTR_ERR(msg);
+	}
+
+	hdr = sg_virt(&msg->sg_request);
+	hdr->code = cpu_to_virtio32(vdev, VIRTIO_SND_R_DC_COUNT);
+
+	sg_init_one(&sg_response_ext, count, sizeof(*count));
+	msg->sg_response_ext = &sg_response_ext;
+	msg->reply = count;
+	msg->reply_size = sizeof(*count);
+
+	code = virtsnd_ctl_msg_send_sync(snd, msg);
+	if (code) {
+		dev_warn(&vdev->dev, "failed to query dc count: %d\n",
+			 code);
+		devm_kfree(&vdev->dev, count);
+		return code;
+	}
+
+        nkctls = *count;
 	if (!nkctls)
 		return 0;
 
@@ -356,6 +405,7 @@ int virtsnd_dc_parse_cfg(struct virtio_snd *snd)
 	INIT_WORK(&snd->kctl_work, virtsnd_dc_work);
 
 	schedule_work(&snd->kctl_work);
+	wait_for_completion(&dc_setup_done);
 
 	return 0;
 }

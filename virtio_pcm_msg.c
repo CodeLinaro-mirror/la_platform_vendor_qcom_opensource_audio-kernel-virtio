@@ -15,8 +15,14 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, see <http://www.gnu.org/licenses/>.
+ *
+ *
+ *​​​​ Changes from Qualcomm Innovation Center are provided under the following license:
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 #include <sound/pcm_params.h>
+#include <linux/mm.h>
 
 #include "virtio_card.h"
 
@@ -51,6 +57,17 @@ struct virtio_pcm_msg {
 	struct virtio_pcm_substream *substream;
 	struct virtio_snd_pcm_xfer xfer;
 	struct virtio_snd_pcm_status status;
+	size_t length;
+	unsigned int sid;
+
+	struct dma_data_desc {
+		uint64_t addr;
+		uint32_t offset;
+		uint32_t period;
+		uint32_t dma_bytes;
+		uint32_t export_id;
+	} desc;
+
 	struct scatterlist sgs[PCM_MSG_SG_MAX];
 };
 
@@ -59,17 +76,37 @@ int virtsnd_pcm_msg_alloc(struct virtio_pcm_substream *substream,
 			  unsigned int period_bytes)
 {
 	struct virtio_device *vdev = substream->snd->vdev;
+	struct snd_pcm_runtime *runtime = substream->substream->runtime;
 	unsigned int i;
+	int32_t ret;
+	size_t dma_bytes = PAGE_ALIGN(runtime->dma_bytes);
 
-	if (substream->msgs)
+
+	if (substream->msgs) {
 		devm_kfree(&vdev->dev, substream->msgs);
+	}
 
 	substream->msgs = devm_kcalloc(&vdev->dev, nmsg,
 				       sizeof(*substream->msgs), GFP_KERNEL);
 	if (!substream->msgs)
 		return -ENOMEM;
 
+	/* export dma area to remote VM */
+	ret = vsnd_dma_area_export(substream, runtime->dma_area, dma_bytes,
+				   &substream->export_id);
+	if (ret) {
+		pr_err("failed to export dma area of %zu bytes to PVM return %d\n",
+		       runtime->dma_bytes, ret);
+		substream->export_id = -1;
+		substream->export_ready = 0;
+	} else {
+		pr_info("export dma area of %zu bytes OK exp id %d\n",
+			runtime->dma_bytes, substream->export_id);
+		substream->export_ready = 1;
+	}
+
 	for (i = 0; i < nmsg; ++i) {
+		u8 *data = runtime->dma_area + period_bytes * i;
 		struct virtio_pcm_msg *msg = &substream->msgs[i];
 
 		msg->substream = substream;
@@ -81,6 +118,14 @@ int virtsnd_pcm_msg_alloc(struct virtio_pcm_substream *substream,
 			    dma_area + period_bytes * i, period_bytes);
 		sg_init_one(&msg->sgs[PCM_MSG_SG_STATUS], &msg->status,
 			    sizeof(msg->status));
+
+		msg->length = period_bytes;
+
+		msg->desc.addr = (uint64_t)data;
+		msg->desc.offset = period_bytes * i;
+		msg->desc.period = i;
+		msg->desc.export_id = substream->export_id;
+		msg->desc.dma_bytes = dma_bytes;
 	}
 
 	return 0;
@@ -91,53 +136,50 @@ int virtsnd_pcm_msg_send(struct virtio_pcm_substream *substream)
 	struct snd_pcm_runtime *runtime = substream->substream->runtime;
 	struct virtio_snd *snd = substream->snd;
 	struct virtio_device *vdev = snd->vdev;
-	struct virtqueue *vqueue = virtsnd_pcm_queue(substream)->vqueue;
+	snd_pcm_uframes_t hw_ptr;
+
 	int i;
 	int n;
-	bool notify = false;
-
-	if (!vqueue)
-		return -EIO;
+	int32_t hab_socket;
 
 	i = (substream->msg_last_enqueued + 1) % runtime->periods;
 	n = runtime->periods - atomic_read(&substream->msg_count);
 
 	for (; n; --n, i = (i + 1) % runtime->periods) {
 		struct virtio_pcm_msg *msg = &substream->msgs[i];
-		struct scatterlist *psgs[PCM_MSG_SG_MAX] = {
-			[PCM_MSG_SG_XFER] = &msg->sgs[PCM_MSG_SG_XFER],
-			[PCM_MSG_SG_DATA] = &msg->sgs[PCM_MSG_SG_DATA],
-			[PCM_MSG_SG_STATUS] = &msg->sgs[PCM_MSG_SG_STATUS]
-		};
 		int rc;
 
 		msg->xfer.stream_id = cpu_to_virtio32(vdev, substream->sid);
 		memset(&msg->status, 0, sizeof(msg->status));
-
 		atomic_inc(&substream->msg_count);
 
 		if (substream->direction == SNDRV_PCM_STREAM_PLAYBACK)
-			rc = virtqueue_add_sgs(vqueue, psgs, 2, 1, msg,
-					       GFP_ATOMIC);
-		else
-			rc = virtqueue_add_sgs(vqueue, psgs, 1, 2, msg,
-					       GFP_ATOMIC);
 
+			hab_socket = snd->queues[VIRTIO_SND_VQ_RX].thread_data.hab_socket; // Playback uses RX
+		else {
+			hw_ptr = (snd_pcm_uframes_t)atomic_read(&substream->hw_ptr);
+			msg->desc.offset = frames_to_bytes(runtime, hw_ptr);
+			if (msg->desc.offset + msg->length >= runtime->dma_bytes)
+				msg->length = runtime->dma_bytes - msg->desc.offset;
+
+			hab_socket = snd->queues[VIRTIO_SND_VQ_TX].thread_data.hab_socket; // Capture uses TX
+		}
+
+
+		rc = habmm_socket_send(hab_socket, msg, sizeof(*msg), 0);
 		if (rc) {
+			dev_err(&vdev->dev,
+				"SID %u: failed to send I/O message vcid %X ret %d msgsz %zd\n",
+				substream->sid, hab_socket, rc, sizeof(*msg));
 			atomic_dec(&substream->msg_count);
 			return -EIO;
 		}
 
 		substream->msg_last_enqueued = i;
+
+		if (substream->direction == SNDRV_PCM_STREAM_CAPTURE)
+			break;
 	}
-
-	if (!(substream->features & (1U << VIRTIO_SND_PCM_F_MSG_POLLING)))
-		notify = virtqueue_kick_prepare(vqueue);
-
-	if (notify)
-		if (!virtqueue_notify(vqueue))
-			return -EIO;
-
 	return 0;
 }
 
@@ -168,31 +210,24 @@ static void virtsnd_pcm_msg_complete(struct virtio_pcm_msg *msg, size_t size)
 	atomic_set(&substream->hw_ptr, (u32)(hw_ptr % runtime->buffer_size));
 	atomic_set(&substream->xfer_xrun, 0);
 
-	runtime->delay =
-		bytes_to_frames(runtime,
-				le32_to_cpu(msg->status.latency_bytes));
+	runtime->delay = bytes_to_frames(
+		runtime, le32_to_cpu(msg->status.latency_bytes));
 
 	snd_pcm_period_elapsed(substream->substream);
 }
 
-static inline void virtsnd_pcm_notify_cb(struct virtio_snd_queue *queue)
+static inline void virtsnd_pcm_notify_cb(struct virtio_snd_queue *queue, struct virtio_pcm_msg *msg)
 {
 	unsigned long flags;
+	struct virtio_pcm_substream *substream;
+	unsigned int msg_count;
+	u32 length;
+
+
 
 	spin_lock_irqsave(&queue->lock, flags);
-	while (queue->vqueue) {
-		virtqueue_disable_cb(queue->vqueue);
 
-		for (;;) {
-			struct virtio_pcm_substream *substream;
-			struct virtio_pcm_msg *msg;
-			unsigned int msg_count;
-			u32 length;
-
-			msg = virtqueue_get_buf(queue->vqueue, &length);
-			if (!msg)
-				break;
-
+			length = msg->length;
 			substream = msg->substream;
 
 			msg_count = atomic_dec_return(&substream->msg_count);
@@ -203,29 +238,13 @@ static inline void virtsnd_pcm_notify_cb(struct virtio_snd_queue *queue)
 			} else if (!msg_count) {
 				wake_up_all(&substream->msg_empty);
 			}
-		}
-
-		if (unlikely(virtqueue_is_broken(queue->vqueue)))
-			break;
-
-		if (virtqueue_enable_cb(queue->vqueue))
-			break;
-	}
 	spin_unlock_irqrestore(&queue->lock, flags);
 }
 
-void virtsnd_pcm_tx_notify_cb(struct virtqueue *vqueue)
+void vsnd_process_pcm_msg(struct virtio_snd_queue *queue,
+			  struct virtio_pcm_msg *msg)
 {
-	struct virtio_snd *snd = vqueue->vdev->priv;
-
-	virtsnd_pcm_notify_cb(virtsnd_tx_queue(snd));
-}
-
-void virtsnd_pcm_rx_notify_cb(struct virtqueue *vqueue)
-{
-	struct virtio_snd *snd = vqueue->vdev->priv;
-
-	virtsnd_pcm_notify_cb(virtsnd_rx_queue(snd));
+	virtsnd_pcm_notify_cb(queue, msg);
 }
 
 struct virtio_snd_msg *
