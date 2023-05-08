@@ -154,10 +154,9 @@ static int vsnd_kthread(void *d)
 				queue, (struct virtio_pcm_msg *)buff);
 		} else if (p->mmid == MM_AUD_4) {
 			queue = virtsnd_rx_queue(snd);
-		}
-		else
 			vsnd_process_pcm_msg(
 				queue, (struct virtio_pcm_msg *)buff);
+		}
 	}
 
 	p->bexited = 1;
