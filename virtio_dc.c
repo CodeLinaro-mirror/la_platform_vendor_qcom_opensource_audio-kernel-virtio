@@ -277,27 +277,35 @@ static void virtsnd_dc_work(struct work_struct *work)
 				SNDRV_CTL_ELEM_ACCESS_TLV_COMMAND;
 	int code;
 
-	for (i = 0; i < ctx->nkctls; ++i) {
-		struct virtio_kctl *kctl;
-		struct snd_ctl_elem_info *elem_info;
-		struct snd_kcontrol_new kctl_new;
-		info = devm_kcalloc(&vdev->dev, 1, sizeof(*info), GFP_KERNEL);
-		if (!info)
-			return;
+	int controls_remaining = ctx->nkctls;
+	int max_control_request = (HAB_BUFFER_SIZE - sizeof(struct virtio_snd_query_info) - sizeof(struct virtio_snd_hdr)) / sizeof(struct virtio_snd_dc_info);
+	info = devm_kcalloc(&vdev->dev, ctx->nkctls, sizeof(*info), GFP_KERNEL);
+	if (!info)
+		return;
 
-		code = virtsnd_ctl_query_info(snd, VIRTIO_SND_R_DC_INFO, i, 1,
-					      sizeof(*info), info);
+	while (controls_remaining) {
+		int num_requested = controls_remaining < max_control_request ? controls_remaining : max_control_request;
+		int start_id = ctx->nkctls - controls_remaining;
+
+		code = virtsnd_ctl_query_info(snd, VIRTIO_SND_R_DC_INFO, start_id, num_requested, sizeof(*info),
+						((unsigned char*)info + (sizeof(*info) * start_id)));
 		if (code) {
 			dev_warn(&vdev->dev,
-				 "Failed to query control element information: %d\n",
-				 code);
+				"Failed to query control element information: %d\n",
+				code);
 			devm_kfree(&vdev->dev, info);
 			return;
 		}
 
-		kctl = &ctx->kctls[i];
-		elem_info = &info->elem_info;
-		kctl->info = info;
+		controls_remaining -= num_requested;
+	}
+
+	for (i = 0; i < ctx->nkctls; ++i) {
+		struct virtio_kctl *kctl = &ctx->kctls[i];
+		struct snd_ctl_elem_info *elem_info = &info[i].elem_info;
+		struct snd_kcontrol_new kctl_new;
+
+		kctl->info = &info[i];
 
 		if (elem_info->type == SNDRV_CTL_ELEM_TYPE_ENUMERATED) {
 			unsigned int nvalues =

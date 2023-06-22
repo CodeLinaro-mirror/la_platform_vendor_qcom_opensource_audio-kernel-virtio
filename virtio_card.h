@@ -39,6 +39,8 @@
 
 #include <linux/habmm.h>
 
+#define HAB_BUFFER_SIZE 4096
+
 struct virtio_jack;
 struct virtio_pcm_substream;
 struct virtio_kctl_ctx;

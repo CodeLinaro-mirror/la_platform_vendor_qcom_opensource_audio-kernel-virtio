@@ -29,8 +29,6 @@
 
 #include "virtio_card.h"
 
-#define HAB_BUFFER_SIZE 4096
-
 static int virtsnd_card_info(struct virtio_snd *snd)
 {
 	if (VIRTIO_HAS_OPSY_EXTENSION(snd, DEV_EXT_INFO)) {
