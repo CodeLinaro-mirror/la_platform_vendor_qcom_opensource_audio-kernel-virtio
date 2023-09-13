@@ -231,6 +231,11 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 			cpu_to_virtio32(vdev,
 					1U << VIRTIO_SND_PCM_F_EVT_XRUNS);
 
+	if (ss->features & (1U << VIRTIO_SND_PCM_F_HOSTLESS))
+		request->features |=
+			cpu_to_virtio32(vdev,
+					1U << VIRTIO_SND_PCM_F_HOSTLESS);
+
 	rc = virtsnd_ctl_msg_send_sync(ss->snd, msg);
 	if (rc)
 		return rc;
@@ -329,11 +334,13 @@ static int virtsnd_pcm_trigger(struct snd_pcm_substream *substream, int command)
 	case SNDRV_PCM_TRIGGER_RESUME: {
 		int rc;
 
-		spin_lock(&queue->lock);
-		rc = virtsnd_pcm_msg_send(ss);
-		spin_unlock(&queue->lock);
-		if (rc)
-			return rc;
+		if (!(ss->features & (1U << VIRTIO_SND_PCM_F_HOSTLESS))) {
+			spin_lock(&queue->lock);
+			rc = virtsnd_pcm_msg_send(ss);
+			spin_unlock(&queue->lock);
+			if (rc)
+				return rc;
+		}
 
 		atomic_set(&ss->xfer_enabled, 1);
 
