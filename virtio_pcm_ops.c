@@ -117,7 +117,15 @@ static int virtsnd_pcm_open(struct snd_pcm_substream *substream)
 
 			if (substream->number < stream->nsubstreams)
 				ss = stream->substreams[substream->number];
+
+			snd_pcm_hw_constraint_step(substream->runtime, 0,
+				SNDRV_PCM_HW_PARAM_PERIOD_BYTES, 64);
+			snd_pcm_hw_constraint_step(substream->runtime, 0,
+				SNDRV_PCM_HW_PARAM_BUFFER_BYTES, 64);
+
+
 			break;
+
 		}
 		}
 	}
