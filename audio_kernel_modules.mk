@@ -11,9 +11,9 @@ endif
 
 ifeq ($(BUILD_AUDIO_MODULES),true)
 ifeq ($(TARGET_BOARD_AUTO),true)
-ifeq ($(call is-board-platform-in-list,msmnile), true)
+ifeq ($(call is-board-platform-in-list,msmnile gen4), true)
 
-ifneq (,$(filter $(TARGET_BOARD_PLATFORM)$(TARGET_BOARD_SUFFIX), msmnile_gvmq))
+ifneq (,$(filter $(TARGET_BOARD_PLATFORM)$(TARGET_BOARD_SUFFIX), msmnile_gvmq gen4_gvm))
 AUDIO_KERNEL_MODULES += $(KERNEL_MODULES_OUT)/msm_virtio_snd.ko
 endif
 

@@ -8,7 +8,7 @@ else
 endif
 
 ifeq ($(AUDIO_DLKM_ENABLE), true)
-  ifeq ($(call is-board-platform-in-list, msmnile), true)
+  ifeq ($(call is-board-platform-in-list, msmnile gen4), true)
       include vendor/qcom/opensource/audio-kernel-virtio/audio_kernel_modules.mk
   endif
   BOARD_VENDOR_KERNEL_MODULES += $(AUDIO_KERNEL_MODULES)
