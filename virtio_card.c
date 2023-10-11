@@ -138,7 +138,7 @@ static int vsnd_kthread(void *d)
 			if (ret == -ENODEV)
 				break;
 		} else {
-			pr_info("%s mmid %d ok size %d\n",
+			pr_debug("%s mmid %d ok size %d\n",
 				__func__, p->mmid, sz);
 		}
 
