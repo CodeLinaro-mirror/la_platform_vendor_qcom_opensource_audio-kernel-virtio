@@ -222,7 +222,7 @@ static void virtsnd_pcm_prealloc_pages(struct virtio_pcm_substream *substream)
 {
 	struct snd_pcm_substream *ksubstream = substream->substream;
 	size_t size = substream->hw.buffer_bytes_max;
-	struct device *data = snd_dma_continuous_data(GFP_KERNEL);
+	struct device *data = NULL;
 
 	snd_pcm_lib_preallocate_pages(ksubstream,
 					     SNDRV_DMA_TYPE_CONTINUOUS, data,
