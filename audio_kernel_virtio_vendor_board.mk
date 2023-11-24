@@ -7,6 +7,10 @@ else
   AUDIO_DLKM_ENABLE := true
 endif
 
+ifeq ($(TARGET_USES_AUDIOLITE), true)
+  AUDIO_DLKM_ENABLE := false
+endif
+
 ifeq ($(AUDIO_DLKM_ENABLE), true)
   ifeq ($(TARGET_USES_GY), true)
       include vendor/qcom/opensource/audio-kernel-virtio/audio_kernel_modules.mk
