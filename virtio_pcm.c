@@ -34,7 +34,7 @@ static unsigned int pcm_periods_min = 2;
 module_param(pcm_periods_min, uint, 0644);
 MODULE_PARM_DESC(pcm_periods_min, "Minimum number of PCM periods");
 
-static unsigned int pcm_periods_max = 16;
+static unsigned int pcm_periods_max = 512;
 module_param(pcm_periods_max, uint, 0644);
 MODULE_PARM_DESC(pcm_periods_max, "Maximum number of PCM periods");
 
@@ -122,7 +122,8 @@ static int virtsnd_pcm_build_hw(struct virtio_pcm_substream *substream,
 		SNDRV_PCM_INFO_BLOCK_TRANSFER |
 		SNDRV_PCM_INFO_INTERLEAVED |
 		SNDRV_PCM_INFO_RESUME |
-		SNDRV_PCM_INFO_PAUSE;
+		SNDRV_PCM_INFO_PAUSE |
+		SNDRV_PCM_INFO_NO_PERIOD_WAKEUP;
 
 	if (!info->channels_min || info->channels_min > info->channels_max) {
 		dev_err(&vdev->dev,
@@ -218,15 +219,76 @@ static int virtsnd_pcm_build_hw(struct virtio_pcm_substream *substream,
 	return 0;
 }
 
-static void virtsnd_pcm_prealloc_pages(struct virtio_pcm_substream *substream)
-{
-	struct snd_pcm_substream *ksubstream = substream->substream;
-	size_t size = substream->hw.buffer_bytes_max;
-	struct device *data = NULL;
+// static void virtsnd_pcm_prealloc_pages(struct virtio_pcm_substream *substream)
+// {
+// 	struct snd_pcm_substream *ksubstream = substream->substream;
+// 	size_t size = substream->hw.buffer_bytes_max;
+// 	struct device *data = NULL;
 
-	snd_pcm_lib_preallocate_pages(ksubstream,
-					     SNDRV_DMA_TYPE_CONTINUOUS, data,
-					     size, size);
+// 	snd_pcm_lib_preallocate_pages(ksubstream,
+// 					     SNDRV_DMA_TYPE_CONTINUOUS, data,
+// 					     size, size);
+// }
+
+int virtsnd_alloc_dmabuf(struct virtio_pcm_substream *substream, size_t size, enum dma_buf_index index)
+{
+	int rc = -EINVAL;
+	struct dma_heap *heap = NULL;
+	struct virtio_device *vdev = substream->snd->vdev;
+	size_t alloc_size = PAGE_ALIGN(size);
+
+	if (substream->dma_data[index].vmap != NULL) {
+		dev_err(&vdev->dev, "%s: virtsnd_alloc_buffer: buffer index %d already allocated", __func__, index);
+		return 0;
+	}
+
+	substream->dma_data[index].vmap = kzalloc(sizeof(struct dma_buf_map), GFP_KERNEL);
+	if (!substream->dma_data[index].vmap) {
+		rc = -ENOMEM;
+		goto err;
+	}
+
+	heap = dma_heap_find("system");
+	if (!heap)
+		goto err;
+
+	substream->dma_data[index].dma_buf = dma_heap_buffer_alloc(heap, alloc_size, 0, 0);
+	if (IS_ERR_OR_NULL((void*)substream->dma_data[index].dma_buf)) {
+		rc = -ENOMEM;
+		goto err;
+	}
+
+	substream->dma_data[index].attach = dma_buf_attach(substream->dma_data[index].dma_buf, &vdev->dev);
+	if (IS_ERR(substream->dma_data[index].attach)) {
+		rc = PTR_ERR(substream->dma_data[index].attach);
+		goto detach_dma_buf;
+	}
+
+	substream->dma_data[index].table = dma_buf_map_attachment(substream->dma_data[index].attach, DMA_BIDIRECTIONAL);
+	if (IS_ERR(substream->dma_data[index].table)) {
+		rc = PTR_ERR(substream->dma_data[index].table);
+		goto detach_dma_buf;
+	}
+
+	rc = dma_buf_vmap(substream->dma_data[index].dma_buf, substream->dma_data[index].vmap);
+	if (rc)
+		goto unmap_attachment;
+
+	return 0;
+
+unmap_attachment:
+	dma_buf_unmap_attachment(substream->dma_data[index].attach,
+				 substream->dma_data[index].table,
+				 DMA_BIDIRECTIONAL);
+detach_dma_buf:
+	dma_buf_detach(substream->dma_data[index].dma_buf,
+		           substream->dma_data[index].attach);
+	dma_buf_put(substream->dma_data[index].dma_buf);
+
+ err:
+	if (substream->dma_data[index].vmap)
+		kfree(substream->dma_data[index].vmap);
+	return rc;
 }
 
 struct virtio_pcm *virtsnd_pcm_find(struct virtio_snd *snd, unsigned int nid)
@@ -594,7 +656,10 @@ int virtsnd_pcm_build_devs(struct virtio_snd *snd)
 				substream->substream = ksubstream;
 				ksubstream = ksubstream->next;
 
-				virtsnd_pcm_prealloc_pages(substream);
+				code = virtsnd_alloc_dmabuf(substream, substream->hw.buffer_bytes_max, DMA_BUF_DATA);
+				if (code) {
+					dev_err(&vdev->dev, "Failed to allocate dma_buf for substream %d, failing", i);
+				}
 			}
 
 			snd_pcm_set_ops(pcm->pcm, i, &virtsnd_pcm_ops);

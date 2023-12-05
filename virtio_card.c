@@ -168,14 +168,22 @@ static int vsnd_kthread(void *d)
 static struct virtio_device *g_vdev;
 
 int vsnd_dma_area_export(struct virtio_pcm_substream *vss,
-			 unsigned char *dma_area, size_t dma_bytes,
+			 struct dma_buf* dma_area, size_t dma_bytes,
 			 uint32_t *export_id)
 {
 	struct virtio_snd *snd = vss->snd;
 	int ret;
 	int32_t hab_socket;
 
-	if (vss->direction == SNDRV_PCM_STREAM_PLAYBACK) {
+	/* use control queue to export memory since other queues are not used in push-pull mode */
+	if (vss->substream->runtime->no_period_wakeup) {
+		hab_socket =
+			snd->queues[VIRTIO_SND_VQ_CONTROL]
+				.thread_data
+				.hab_socket;
+	}
+
+	else if (vss->direction == SNDRV_PCM_STREAM_PLAYBACK) {
 		hab_socket =
 			snd->queues[VIRTIO_SND_VQ_RX]
 				.thread_data
@@ -192,7 +200,7 @@ int vsnd_dma_area_export(struct virtio_pcm_substream *vss,
 		pr_info("dma area export request direction %d vcid %X exp_id %d\n",
 			vss->direction, hab_socket, vss->export_id);
 
-	ret = habmm_export(hab_socket, dma_area, dma_bytes, export_id, HABMM_EXP_MEM_TYPE_DMA);
+	ret = habmm_export(hab_socket, dma_area, dma_bytes, export_id, HABMM_EXPIMP_FLAGS_DMABUF);
 	if (!ret) {
 		pr_info("dma area export ok on RX %zu bytes exp id %d\n",
 			dma_bytes, *export_id);
@@ -200,6 +208,39 @@ int vsnd_dma_area_export(struct virtio_pcm_substream *vss,
 		pr_err("dma area export failed %d vcid %X\n", ret, hab_socket);
 	}
 	return ret;
+}
+
+void vsnd_dma_area_unexport(struct virtio_pcm_substream* vss, uint32_t export_id)
+{
+	struct virtio_snd *snd = vss->snd;
+        int32_t hab_socket;
+	int ret;
+
+        /* use control queue to export memory since other queues are not used in push-pull mode */
+        if (vss->substream->runtime->no_period_wakeup) {
+                hab_socket =
+                        snd->queues[VIRTIO_SND_VQ_CONTROL]
+                                .thread_data
+                                .hab_socket;
+        }
+
+        else if (vss->direction == SNDRV_PCM_STREAM_PLAYBACK) {
+                hab_socket =
+                        snd->queues[VIRTIO_SND_VQ_RX]
+                                .thread_data
+                                .hab_socket; // assume it is always RX for dma
+        } else {
+                hab_socket =
+                        snd->queues[VIRTIO_SND_VQ_TX].thread_data.hab_socket;
+        }
+
+
+	ret = habmm_unexport(hab_socket, export_id, 0);
+
+	if (ret)
+		dev_err(&snd->vdev->dev, "%s: habmm_unexport failed: %d", __func__, ret);
+
+	vss->export_ready = 0;
 }
 
 #define VSND_EVENTQ_SZ 32

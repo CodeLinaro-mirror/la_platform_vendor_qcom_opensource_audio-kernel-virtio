@@ -27,10 +27,29 @@
 #include <linux/atomic.h>
 #include <linux/virtio_config.h>
 #include <sound/pcm.h>
+#include <linux/dma-mapping.h>
+#include <linux/dma-buf.h>
+#include <linux/dma-buf-map.h>
+#include <linux/dma-heap.h>
 
 struct virtio_pcm;
 struct virtio_pcm_msg;
 struct virtio_snd_queue;
+
+enum dma_buf_index {
+	DMA_BUF_INDEX_NONE = -1,
+	DMA_BUF_DATA,
+	DMA_BUF_POS,
+
+	DMA_BUF_INDEX_MAX = DMA_BUF_POS,
+};
+
+struct dma_buf_data {
+	struct dma_buf_map *vmap;
+	struct dma_buf *dma_buf;
+	struct dma_buf_attachment *attach;
+	struct sg_table *table;
+};
 
 /**
  * struct virtio_pcm_substream - virtio PCM substream representation.
@@ -66,6 +85,37 @@ struct virtio_pcm_substream {
 
 	int export_ready; /*dma area is shared with PVM */
 	u32 export_id;
+	u32 pos_buf_export_id; /* this export id is used in push-pull mode only */
+	struct dma_buf_data dma_data[DMA_BUF_INDEX_MAX + 1];
+};
+
+struct virtio_pcm_push_pull_pos_buf {
+
+	volatile uint32_t frame_counter;
+	/**  Counter used to handle interprocessor synchronization issues associated
+		with reading write_index, timestamp_us_lsw, and timestamp_us_msw.
+		These are invalid when frame_counter = 0.
+
+		Read the frame_counter value both before and after reading these values
+		to make sure the spf did not update them while the client was reading them.
+	*/
+
+	volatile uint32_t index;
+	/**  Index in bytes to where the spf is writing (push mode) or reading (pull mode).
+		"0 &ge; index &gt; sh_mem_pull_push_mode_cfg_t::shared_circ_buf_size - 1"}
+	*/
+
+	volatile uint32_t timestamp_us_lsw;
+	/**  Upper 32 bits of the 64-bit timestamp in microseconds.
+		For pull mode, the timestamp is the timestamp at which index was updated.
+		For push mode, the timestamp is the buffer or the capture timestamp of the sample at index.
+	*/
+
+	volatile uint32_t timestamp_us_msw;
+	/**  Upper 32 bits of the 64-bit timestamp in microseconds.
+		For pull mode, the timestamp is the timestamp at which index was updated.
+		For push mode, the timestamp is the buffer or the capture timestamp of the sample at index.
+	*/	
 };
 
 /**
@@ -132,8 +182,12 @@ int virtsnd_pcm_msg_alloc(struct virtio_pcm_substream *substream,
 int virtsnd_pcm_msg_send(struct virtio_pcm_substream *substream);
 
 int vsnd_dma_area_export(struct virtio_pcm_substream *vss,
-			 unsigned char *dma_area, size_t dma_bytes,
+			 struct dma_buf *dma_area, size_t dma_bytes,
 			 uint32_t *export_id);
 void vsnd_process_pcm_msg(struct virtio_snd_queue *queue, struct virtio_pcm_msg *msg);
+
+int virtsnd_alloc_dmabuf(struct virtio_pcm_substream *substream, size_t size, enum dma_buf_index index);
+
+void vsnd_dma_area_unexport(struct virtio_pcm_substream *vss, uint32_t export_id);
 
 #endif /* VIRTIO_SND_PCM_H */
