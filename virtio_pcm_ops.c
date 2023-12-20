@@ -295,6 +295,7 @@ static int virtsnd_pcm_prepare(struct snd_pcm_substream *substream)
 
 	snd_pcm_stream_lock_irqsave(substream, flags);
 	state = substream->runtime->status->state;
+	substream->runtime->stop_threshold = substream->runtime->boundary;
 	snd_pcm_stream_unlock_irqrestore(substream, flags);
 
 	if (state != SNDRV_PCM_STATE_SUSPENDED) {
