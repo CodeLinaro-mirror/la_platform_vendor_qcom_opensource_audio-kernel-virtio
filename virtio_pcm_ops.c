@@ -67,8 +67,10 @@ static const struct virtsnd_a2v_rate g_a2v_rate_map[] = {
 	{ 5512, VIRTIO_SND_PCM_RATE_5512 },
 	{ 8000, VIRTIO_SND_PCM_RATE_8000 },
 	{ 11025, VIRTIO_SND_PCM_RATE_11025 },
+	{ 12000, VIRTIO_SND_PCM_RATE_12000},
 	{ 16000, VIRTIO_SND_PCM_RATE_16000 },
 	{ 22050, VIRTIO_SND_PCM_RATE_22050 },
+	{ 24000, VIRTIO_SND_PCM_RATE_24000 },
 	{ 32000, VIRTIO_SND_PCM_RATE_32000 },
 	{ 44100, VIRTIO_SND_PCM_RATE_44100 },
 	{ 48000, VIRTIO_SND_PCM_RATE_48000 },
@@ -76,9 +78,21 @@ static const struct virtsnd_a2v_rate g_a2v_rate_map[] = {
 	{ 88200, VIRTIO_SND_PCM_RATE_88200 },
 	{ 96000, VIRTIO_SND_PCM_RATE_96000 },
 	{ 176400, VIRTIO_SND_PCM_RATE_176400 },
-	{ 192000, VIRTIO_SND_PCM_RATE_192000 }
+	{ 192000, VIRTIO_SND_PCM_RATE_192000 },
+	{ 384000, VIRTIO_SND_PCM_RATE_384000 }
 };
 
+/* Conventional and unconventional sample rate supported */
+static unsigned int supported_sample_rates[] = {
+	5512, 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000,
+	64000, 88200, 96000, 176400, 192000, 384000
+};
+
+static struct snd_pcm_hw_constraint_list constraints_sample_rates = {
+	.count = ARRAY_SIZE(supported_sample_rates),
+	.list = supported_sample_rates,
+	.mask = 0,
+};
 
 static inline bool virtsnd_pcm_released(struct virtio_pcm_substream *substream)
 {
@@ -110,26 +124,34 @@ static int virtsnd_pcm_open(struct snd_pcm_substream *substream)
 {
 	struct virtio_pcm *pcm = snd_pcm_substream_chip(substream);
 	struct virtio_pcm_substream *ss = NULL;
+	int ret = 0;
 
 	if (pcm) {
 		switch (substream->stream) {
-		case SNDRV_PCM_STREAM_PLAYBACK:
-		case SNDRV_PCM_STREAM_CAPTURE: {
-			struct virtio_pcm_stream *stream =
-				&pcm->streams[substream->stream];
+			case SNDRV_PCM_STREAM_PLAYBACK:
+			case SNDRV_PCM_STREAM_CAPTURE: {
+				struct virtio_pcm_stream *stream =
+					&pcm->streams[substream->stream];
 
-			if (substream->number < stream->nsubstreams)
-				ss = stream->substreams[substream->number];
+				if (substream->number < stream->nsubstreams)
+					ss = stream->substreams[substream->number];
 
-			snd_pcm_hw_constraint_step(substream->runtime, 0,
-				SNDRV_PCM_HW_PARAM_PERIOD_BYTES, 64);
-			snd_pcm_hw_constraint_step(substream->runtime, 0,
-				SNDRV_PCM_HW_PARAM_BUFFER_BYTES, 64);
+				snd_pcm_hw_constraint_step(substream->runtime, 0,
+					SNDRV_PCM_HW_PARAM_PERIOD_BYTES, 64);
+				snd_pcm_hw_constraint_step(substream->runtime, 0,
+					SNDRV_PCM_HW_PARAM_BUFFER_BYTES, 64);
 
+				if (stream->substreams[substream->number]->hw.rates & SNDRV_PCM_RATE_KNOT) {
 
-			break;
+					ret = snd_pcm_hw_constraint_list(substream->runtime, 0,
+								SNDRV_PCM_HW_PARAM_RATE,
+								&constraints_sample_rates);
+					if (ret < 0)
+						pr_err("snd_pcm_hw_constraint_list failed\n");
+				}
 
-		}
+				break;
+			}
 		}
 	}
 
@@ -168,7 +190,6 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 	int vformat = -1;
 	int vrate = -1;
 	int rc;
-
 
 	snd_pcm_stream_lock_irqsave(substream, flags);
 	state = substream->runtime->status->state;
