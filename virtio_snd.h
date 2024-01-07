@@ -135,8 +135,7 @@ enum {
 	VIRTIO_SND_R_PCM_COUNT,
 	VIRTIO_SND_R_DC_COUNT,
 
-	VIRTIO_SND_R_EXPORT_MSG,
-	VIRTIO_SND_R_PCM_MSG
+	VIRTIO_SND_R_PCM_MMAP
 };
 
 /* common header */
@@ -226,7 +225,8 @@ enum {
 	VIRTIO_SND_PCM_F_SHMEM_GUEST,
 	VIRTIO_SND_PCM_F_MSG_POLLING,
 	VIRTIO_SND_PCM_F_EVT_SHMEM_PERIODS,
-	VIRTIO_SND_PCM_F_EVT_XRUNS
+	VIRTIO_SND_PCM_F_EVT_XRUNS,
+	VIRTIO_SND_PCM_F_HOSTLESS
 };
 
 /* supported PCM sample formats */
@@ -314,7 +314,18 @@ struct virtio_snd_pcm_set_params {
 	/* selected frame rate (VIRTIO_SND_PCM_RATE_XXX) */
 	__u8 rate;
 
-	__u8 padding;
+	__u8 is_mmap_noirq;
+};
+
+
+struct virtio_snd_pcm_push_pull_info {
+	struct virtio_snd_pcm_hdr hdr;
+	uint32_t data_fd;
+	uint32_t pos_fd;
+	uint32_t data_size;
+	uint32_t pos_size;
+	uint32_t data_export_id;
+	uint32_t pos_export_id;
 };
 
 /*******************************************************************************

@@ -79,6 +79,7 @@ static const struct virtsnd_a2v_rate g_a2v_rate_map[] = {
 	{ 192000, VIRTIO_SND_PCM_RATE_192000 }
 };
 
+
 static inline bool virtsnd_pcm_released(struct virtio_pcm_substream *substream)
 {
 	return atomic_read(&substream->msg_count) == 0;
@@ -100,6 +101,8 @@ static int virtsnd_pcm_release(struct virtio_pcm_substream *substream)
 		rc = wait_event_interruptible(substream->msg_empty,
 					      virtsnd_pcm_released(substream));
 
+	vsnd_dma_area_unexport(substream, substream->export_id);
+
 	return rc;
 }
 
@@ -117,7 +120,15 @@ static int virtsnd_pcm_open(struct snd_pcm_substream *substream)
 
 			if (substream->number < stream->nsubstreams)
 				ss = stream->substreams[substream->number];
+
+			snd_pcm_hw_constraint_step(substream->runtime, 0,
+				SNDRV_PCM_HW_PARAM_PERIOD_BYTES, 64);
+			snd_pcm_hw_constraint_step(substream->runtime, 0,
+				SNDRV_PCM_HW_PARAM_BUFFER_BYTES, 64);
+
+
 			break;
+
 		}
 		}
 	}
@@ -147,6 +158,7 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 	struct virtio_snd_msg *msg;
 	struct virtio_snd_pcm_set_params *request;
 	snd_pcm_format_t format;
+	struct snd_dma_buffer *dma_buf = &substream->dma_buffer;
 	unsigned int channels;
 	unsigned int rate;
 	unsigned int buffer_bytes;
@@ -156,6 +168,7 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 	int vformat = -1;
 	int vrate = -1;
 	int rc;
+
 
 	snd_pcm_stream_lock_irqsave(substream, flags);
 	state = substream->runtime->status->state;
@@ -220,6 +233,7 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 	request->channels = channels;
 	request->format = vformat;
 	request->rate = vrate;
+	request->is_mmap_noirq = hw_params->flags & SNDRV_PCM_HW_PARAMS_NO_PERIOD_WAKEUP ? 1 : 0;
 
 	if (ss->features & (1U << VIRTIO_SND_PCM_F_MSG_POLLING))
 		request->features |=
@@ -231,6 +245,11 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 			cpu_to_virtio32(vdev,
 					1U << VIRTIO_SND_PCM_F_EVT_XRUNS);
 
+	if (ss->features & (1U << VIRTIO_SND_PCM_F_HOSTLESS))
+		request->features |=
+			cpu_to_virtio32(vdev,
+					1U << VIRTIO_SND_PCM_F_HOSTLESS);
+
 	rc = virtsnd_ctl_msg_send_sync(ss->snd, msg);
 	if (rc)
 		return rc;
@@ -239,16 +258,23 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 	if (runtime->dma_area)
 		return 0;
 
-	/* Allocate hardware buffer */
-	rc = snd_pcm_lib_malloc_pages(substream, buffer_bytes);
-	if (rc < 0)
-		return rc;
+	/* set runtime buffer to prealloced dma buf*/
+	dma_buf->dev.type = SNDRV_DMA_TYPE_DEV;
+	dma_buf->dev.dev = substream->pcm->card->dev;
+	dma_buf->private_data = NULL;
+	dma_buf->area = ss->dma_data[DMA_BUF_DATA].vmap->vaddr;
+	dma_buf->addr = ss->dma_data[DMA_BUF_DATA].table->sgl->dma_address;
+	dma_buf->bytes = PAGE_ALIGN(buffer_bytes);
+	snd_pcm_set_runtime_buffer(substream, &substream->dma_buffer);
 
+
+	if (!(hw_params->flags & SNDRV_PCM_HW_PARAMS_NO_PERIOD_WAKEUP)) {
 	/* Allocate and initialize I/O messages */
 	rc = virtsnd_pcm_msg_alloc(ss, periods, runtime->dma_area,
 				   period_bytes);
-	if (rc)
-		snd_pcm_lib_free_pages(substream);
+	 if (rc)
+	 	snd_pcm_set_runtime_buffer(substream, NULL);
+	}
 
 	return rc;
 }
@@ -267,7 +293,7 @@ static int virtsnd_pcm_hw_free(struct snd_pcm_substream *substream)
 	 * processing. If there are still pending messages in the queue, the
 	 * next ops->hw_params() call should deal with this.
 	 */
-	snd_pcm_lib_free_pages(substream);
+	snd_pcm_set_runtime_buffer(substream, NULL);
 
 	return rc;
 }
@@ -282,6 +308,7 @@ static int virtsnd_pcm_prepare(struct snd_pcm_substream *substream)
 
 	snd_pcm_stream_lock_irqsave(substream, flags);
 	state = substream->runtime->status->state;
+	substream->runtime->stop_threshold = substream->runtime->boundary;
 	snd_pcm_stream_unlock_irqrestore(substream, flags);
 
 	if (state != SNDRV_PCM_STATE_SUSPENDED) {
@@ -329,11 +356,14 @@ static int virtsnd_pcm_trigger(struct snd_pcm_substream *substream, int command)
 	case SNDRV_PCM_TRIGGER_RESUME: {
 		int rc;
 
-		spin_lock(&queue->lock);
-		rc = virtsnd_pcm_msg_send(ss);
-		spin_unlock(&queue->lock);
-		if (rc)
-			return rc;
+		if (!(ss->features & (1U << VIRTIO_SND_PCM_F_HOSTLESS)) &&
+		    !(substream->runtime->no_period_wakeup)) {
+			spin_lock(&queue->lock);
+			rc = virtsnd_pcm_msg_send(ss);
+			spin_unlock(&queue->lock);
+			if (rc)
+				return rc;
+		}
 
 		atomic_set(&ss->xfer_enabled, 1);
 
@@ -362,6 +392,116 @@ static int virtsnd_pcm_trigger(struct snd_pcm_substream *substream, int command)
 	}
 }
 
+static int virtsnd_pcm_mmap(struct snd_pcm_substream *substream, struct vm_area_struct *vma)
+{
+	int rc = 0;
+	int i;
+	struct virtio_pcm_substream *vss = snd_pcm_substream_chip(substream);
+	struct virtio_device *vdev = vss->snd->vdev;
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	size_t dma_bytes = PAGE_ALIGN(runtime->dma_bytes);
+	unsigned long addr = vma->vm_start;
+	unsigned long offset = vma->vm_pgoff * PAGE_SIZE;
+	struct page *page;
+	struct sg_table *table = vss->dma_data[DMA_BUF_DATA].table;
+	struct scatterlist *sg;
+	struct file *fptr = NULL;
+	int data_fd = dma_buf_fd(vss->dma_data[DMA_BUF_DATA].dma_buf, O_CLOEXEC);
+	int pos_fd = dma_buf_fd(vss->dma_data[DMA_BUF_POS].dma_buf, O_CLOEXEC);
+
+	/* set write permission for data buffer fd so userspace can write to it */
+	fptr = fget(data_fd);
+	if (!fptr) {
+		dev_err(&vdev->dev, "%s: bad data fd", __func__);
+		return -EBADFD;
+	}
+
+	fptr->f_mode = fptr->f_mode | FMODE_WRITE;
+
+	if (substream->runtime->no_period_wakeup) {
+
+		struct virtio_snd_pcm_push_pull_info *buf_info = NULL;
+		struct virtio_snd_msg *data_msg = NULL;
+
+		/* allocate dmabuf for push-pull mode position buffer */
+		rc = virtsnd_alloc_dmabuf(vss, sizeof(struct virtio_pcm_push_pull_pos_buf), DMA_BUF_POS);
+		if (rc)
+			return -ENOMEM;
+
+		/* export data and position buffers to PVM */
+		rc = vsnd_dma_area_export(vss, vss->dma_data[DMA_BUF_DATA].dma_buf,
+					  dma_bytes, &vss->export_id);
+		if (rc)
+			return -EIO;
+
+		rc = vsnd_dma_area_export(vss, vss->dma_data[DMA_BUF_POS].dma_buf,
+				PAGE_ALIGN(sizeof(struct virtio_pcm_push_pull_pos_buf)), &vss->pos_buf_export_id);
+		if (rc)
+			return -EIO;
+
+		/* send data and pos buf fd, size and export_id to PVM */
+		data_msg = virtsnd_ctl_msg_alloc(vdev, sizeof(struct virtio_snd_pcm_push_pull_info),
+						 sizeof(struct virtio_snd_hdr), GFP_KERNEL);
+		if (IS_ERR(data_msg))
+			return PTR_ERR(data_msg);
+
+		buf_info = (struct virtio_snd_pcm_push_pull_info *)sg_virt(&data_msg->sg_request);
+		buf_info->hdr.hdr.code = cpu_to_virtio32(vdev, VIRTIO_SND_R_PCM_MMAP);
+		buf_info->hdr.stream_id = cpu_to_virtio32(vdev, vss->sid);
+		buf_info->data_fd = cpu_to_virtio32(vdev, data_fd);
+		buf_info->pos_fd = cpu_to_virtio32(vdev, pos_fd);
+		buf_info->data_size = cpu_to_virtio32(vdev, PAGE_ALIGN(dma_bytes));
+		buf_info->pos_size = cpu_to_virtio32(vdev, PAGE_ALIGN(sizeof(struct virtio_pcm_push_pull_pos_buf)));
+		buf_info->data_export_id = cpu_to_virtio32(vdev, vss->export_id);
+		buf_info->pos_export_id = cpu_to_virtio32(vdev, vss->pos_buf_export_id);
+
+		rc = virtsnd_ctl_msg_send_sync(vss->snd, data_msg);
+		if (rc)
+			return rc;
+	}
+
+	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+	/* We need to check if a page is associated with this sg list because:
+	 * If the allocation came from a carveout we currently don't have
+	 * pages associated with carved out memory. This might change in the
+	 * future and we can remove this check and the else statement.
+	 */
+	page = sg_page(table->sgl);
+	if (page) {
+		for_each_sg(table->sgl, sg, table->orig_nents, i) {
+			unsigned long remainder = vma->vm_end - addr;
+			unsigned long len;
+			if (!sg) {
+				dev_err(&vdev->dev, "%s: sg is NULL when mmaping", __func__);
+				return -EINVAL;
+			}
+			len = sg->length;
+
+			page = sg_page(sg);
+
+			if (offset >= len) {
+				offset -= len;
+				continue;
+			} else if (offset) {
+				page += offset / PAGE_SIZE;
+				len -= offset;
+				offset = 0;
+			}
+			len = min(len, remainder);
+			remap_pfn_range(vma, addr, page_to_pfn(page), len,
+					vma->vm_page_prot);
+			addr += len;
+			if (addr >= vma->vm_end)
+				return 0;
+		}
+	}
+
+	dev_err(&vdev->dev, "%s: page not found", __func__);
+
+	return -EINVAL;
+}
+
+
 static snd_pcm_uframes_t
 virtsnd_pcm_pointer(struct snd_pcm_substream *substream)
 {
@@ -369,6 +509,36 @@ virtsnd_pcm_pointer(struct snd_pcm_substream *substream)
 
 	if (atomic_read(&ss->xfer_xrun))
 		return SNDRV_PCM_POS_XRUN;
+
+	if (substream->runtime->no_period_wakeup) {
+
+		struct virtio_pcm_push_pull_pos_buf* pos_buf = (struct virtio_pcm_push_pull_pos_buf*)
+							      ss->dma_data[DMA_BUF_POS].vmap->vaddr;
+		uint32_t frame_cnt1, frame_cnt2;
+		uint32_t read_index = 0;
+		snd_pcm_sframes_t hw_frame_ptr;
+		snd_pcm_sframes_t period_size = substream->runtime->period_size;
+
+		int i, j;
+
+		/* try to get the latest update in the pos buffer */
+		for (i = 0; i < 2; i++) {
+			/* retry until there is an update from DSP */
+			for (j = 0; j < 5; j++) {
+				frame_cnt1 = pos_buf->frame_counter;
+				if (frame_cnt1 != 0)
+					break;
+			}
+			read_index = pos_buf->index;
+			frame_cnt2 = pos_buf->frame_counter;
+
+			if (frame_cnt1 != frame_cnt2)
+				continue;
+		}
+
+		hw_frame_ptr = bytes_to_frames(substream->runtime, read_index);
+		return (hw_frame_ptr/period_size) * period_size;
+	}
 
 	return (snd_pcm_uframes_t)atomic_read(&ss->hw_ptr);
 }
@@ -382,4 +552,5 @@ const struct snd_pcm_ops virtsnd_pcm_ops = {
 	.prepare = virtsnd_pcm_prepare,
 	.trigger = virtsnd_pcm_trigger,
 	.pointer = virtsnd_pcm_pointer,
+	.mmap = virtsnd_pcm_mmap,
 };
