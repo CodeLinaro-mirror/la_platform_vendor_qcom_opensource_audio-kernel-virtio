@@ -244,8 +244,11 @@ int virtsnd_alloc_dmabuf(struct virtio_pcm_substream *substream, size_t size, en
 		dev_err(&vdev->dev, "%s: virtsnd_alloc_buffer: buffer index %d already allocated", __func__, index);
 		return 0;
 	}
-
+#ifdef __DMA_BUF_MAP_H__ // kernel 5.15
 	substream->dma_data[index].vmap = kzalloc(sizeof(struct dma_buf_map), GFP_KERNEL);
+#else                    // kernel 6.1
+	substream->dma_data[index].vmap = kzalloc(sizeof(struct iosys_map), GFP_KERNEL);
+#endif
 	if (!substream->dma_data[index].vmap) {
 		rc = -ENOMEM;
 		goto err;
