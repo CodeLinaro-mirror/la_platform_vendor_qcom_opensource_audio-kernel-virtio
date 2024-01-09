@@ -92,7 +92,7 @@ int virtsnd_pcm_msg_alloc(struct virtio_pcm_substream *substream,
 		return -ENOMEM;
 
 	/* export dma area to remote VM */
-	ret = vsnd_dma_area_export(substream, runtime->dma_area, dma_bytes,
+	ret = vsnd_dma_area_export(substream, substream->dma_data[DMA_BUF_DATA].dma_buf, dma_bytes,
 				   &substream->export_id);
 	if (ret) {
 		pr_err("failed to export dma area of %zu bytes to PVM return %d\n",

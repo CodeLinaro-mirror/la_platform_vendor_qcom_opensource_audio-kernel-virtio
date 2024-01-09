@@ -135,8 +135,7 @@ enum {
 	VIRTIO_SND_R_PCM_COUNT,
 	VIRTIO_SND_R_DC_COUNT,
 
-	VIRTIO_SND_R_EXPORT_MSG,
-	VIRTIO_SND_R_PCM_MSG
+	VIRTIO_SND_R_PCM_MMAP
 };
 
 /* common header */
@@ -266,8 +265,10 @@ enum {
 	VIRTIO_SND_PCM_RATE_5512 = 0,
 	VIRTIO_SND_PCM_RATE_8000,
 	VIRTIO_SND_PCM_RATE_11025,
+	VIRTIO_SND_PCM_RATE_12000,
 	VIRTIO_SND_PCM_RATE_16000,
 	VIRTIO_SND_PCM_RATE_22050,
+	VIRTIO_SND_PCM_RATE_24000,
 	VIRTIO_SND_PCM_RATE_32000,
 	VIRTIO_SND_PCM_RATE_44100,
 	VIRTIO_SND_PCM_RATE_48000,
@@ -315,7 +316,18 @@ struct virtio_snd_pcm_set_params {
 	/* selected frame rate (VIRTIO_SND_PCM_RATE_XXX) */
 	__u8 rate;
 
-	__u8 padding;
+	__u8 is_mmap_noirq;
+};
+
+
+struct virtio_snd_pcm_push_pull_info {
+	struct virtio_snd_pcm_hdr hdr;
+	uint32_t data_fd;
+	uint32_t pos_fd;
+	uint32_t data_size;
+	uint32_t pos_size;
+	uint32_t data_export_id;
+	uint32_t pos_export_id;
 };
 
 /*******************************************************************************
