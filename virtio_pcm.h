@@ -24,13 +24,20 @@
 #ifndef VIRTIO_SND_PCM_H
 #define VIRTIO_SND_PCM_H
 
+#include <linux/version.h>
+#include <linux/module.h>
 #include <linux/atomic.h>
 #include <linux/virtio_config.h>
 #include <sound/pcm.h>
 #include <linux/dma-mapping.h>
 #include <linux/dma-buf.h>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
+#include <linux/iosys-map.h>
+#else
 #include <linux/dma-buf-map.h>
+#endif
 #include <linux/dma-heap.h>
+MODULE_IMPORT_NS(DMA_BUF);
 
 struct virtio_pcm;
 struct virtio_pcm_msg;
@@ -45,7 +52,11 @@ enum dma_buf_index {
 };
 
 struct dma_buf_data {
+#ifdef __DMA_BUF_MAP_H__ // kernel 5.15 uses dma-buf-map.h
 	struct dma_buf_map *vmap;
+#else                    // kernel 6.1 uses iosys-map.h
+	struct iosys_map *vmap;
+#endif
 	struct dma_buf *dma_buf;
 	struct dma_buf_attachment *attach;
 	struct sg_table *table;

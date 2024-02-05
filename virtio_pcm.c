@@ -88,8 +88,10 @@ static const struct virtsnd_v2a_rate g_v2a_rate_map[] = {
 	[VIRTIO_SND_PCM_RATE_5512] = { SNDRV_PCM_RATE_5512, 5512 },
 	[VIRTIO_SND_PCM_RATE_8000] = { SNDRV_PCM_RATE_8000, 8000 },
 	[VIRTIO_SND_PCM_RATE_11025] = { SNDRV_PCM_RATE_11025, 11025 },
+	[VIRTIO_SND_PCM_RATE_12000] = { SNDRV_PCM_RATE_KNOT, 12000 },
 	[VIRTIO_SND_PCM_RATE_16000] = { SNDRV_PCM_RATE_16000, 16000 },
 	[VIRTIO_SND_PCM_RATE_22050] = { SNDRV_PCM_RATE_22050, 22050 },
+	[VIRTIO_SND_PCM_RATE_24000] = { SNDRV_PCM_RATE_KNOT, 24000 },
 	[VIRTIO_SND_PCM_RATE_32000] = { SNDRV_PCM_RATE_32000, 32000 },
 	[VIRTIO_SND_PCM_RATE_44100] = { SNDRV_PCM_RATE_44100, 44100 },
 	[VIRTIO_SND_PCM_RATE_48000] = { SNDRV_PCM_RATE_48000, 48000 },
@@ -97,7 +99,8 @@ static const struct virtsnd_v2a_rate g_v2a_rate_map[] = {
 	[VIRTIO_SND_PCM_RATE_88200] = { SNDRV_PCM_RATE_88200, 88200 },
 	[VIRTIO_SND_PCM_RATE_96000] = { SNDRV_PCM_RATE_96000, 96000 },
 	[VIRTIO_SND_PCM_RATE_176400] = { SNDRV_PCM_RATE_176400, 176400 },
-	[VIRTIO_SND_PCM_RATE_192000] = { SNDRV_PCM_RATE_192000, 192000 }
+	[VIRTIO_SND_PCM_RATE_192000] = { SNDRV_PCM_RATE_192000, 192000 },
+	[VIRTIO_SND_PCM_RATE_384000] = { SNDRV_PCM_RATE_384000, 384000 }
 };
 
 static int virtsnd_pcm_build_hw(struct virtio_pcm_substream *substream,
@@ -241,8 +244,11 @@ int virtsnd_alloc_dmabuf(struct virtio_pcm_substream *substream, size_t size, en
 		dev_err(&vdev->dev, "%s: virtsnd_alloc_buffer: buffer index %d already allocated", __func__, index);
 		return 0;
 	}
-
+#ifdef __DMA_BUF_MAP_H__ // kernel 5.15
 	substream->dma_data[index].vmap = kzalloc(sizeof(struct dma_buf_map), GFP_KERNEL);
+#else                    // kernel 6.1
+	substream->dma_data[index].vmap = kzalloc(sizeof(struct iosys_map), GFP_KERNEL);
+#endif
 	if (!substream->dma_data[index].vmap) {
 		rc = -ENOMEM;
 		goto err;
