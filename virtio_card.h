@@ -100,15 +100,6 @@ struct virtio_snd {
 	struct work_struct kctl_work;
 };
 
-
-typedef enum snd_card_status_t {
-	SND_CARD_STATUS_INVALID = -1,
-	SND_CARD_STATUS_OFFLINE = 0,
-	SND_CARD_STATUS_ONLINE,
-	SND_CARD_STATUS_STANDBY,
-
-} snd_card_status_t;
-
 static inline void
 virtsnd_strlcpy(char *dst, const char *src, size_t max_size)
 {
