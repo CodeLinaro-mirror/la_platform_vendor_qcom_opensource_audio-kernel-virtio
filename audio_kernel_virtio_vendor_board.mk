@@ -7,7 +7,7 @@ else
   AUDIO_DLKM_ENABLE := true
 endif
 
-ifeq ($(TARGET_USES_AUDIOLITE), true)
+ifeq ($(TARGET_DISABLE_AUDIO_VIRTIO), true)
   AUDIO_DLKM_ENABLE := false
 endif
 
