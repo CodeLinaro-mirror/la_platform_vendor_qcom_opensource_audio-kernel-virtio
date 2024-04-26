@@ -496,7 +496,7 @@ static int virtsnd_pcm_mmap(struct snd_pcm_substream *substream, struct vm_area_
 				dev_err(&vdev->dev, "%s: sg is NULL when mmaping", __func__);
 				return -EINVAL;
 			}
-			len = sg->length;
+			len = sg_dma_len(sg);
 
 			page = sg_page(sg);
 
