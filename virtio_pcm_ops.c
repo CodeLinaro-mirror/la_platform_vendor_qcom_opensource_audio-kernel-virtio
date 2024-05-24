@@ -141,6 +141,8 @@ static int virtsnd_pcm_open(struct snd_pcm_substream *substream)
 				snd_pcm_hw_constraint_step(substream->runtime, 0,
 					SNDRV_PCM_HW_PARAM_BUFFER_BYTES, 64);
 
+				atomic_set(&ss->suspended, 0);
+
 				if (stream->substreams[substream->number]->hw.rates & SNDRV_PCM_RATE_KNOT) {
 
 					ret = snd_pcm_hw_constraint_list(substream->runtime, 0,
@@ -173,8 +175,6 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 				 struct snd_pcm_hw_params *hw_params)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
-	snd_pcm_state_t state;
-	unsigned long flags;
 	struct virtio_pcm_substream *ss = snd_pcm_substream_chip(substream);
 	struct virtio_device *vdev = ss->snd->vdev;
 	struct virtio_snd_msg *msg;
@@ -191,20 +191,15 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 	int vrate = -1;
 	int rc;
 
-	snd_pcm_stream_lock_irqsave(substream, flags);
-	state = substream->runtime->status->state;
-	snd_pcm_stream_unlock_irqrestore(substream, flags);
-
-	if (state != SNDRV_PCM_STATE_SUSPENDED) {
+	if (!atomic_read(&ss->suspended)) {
 		/*
 		 * If we got here after ops->trigger() was called, the queue may
-		 * still contain messages. In this case, we need to release the
-		 * substream first.
+		 * still contain messages. In this case, we return an error
 		 */
 		if (atomic_read(&ss->msg_count)) {
-			rc = virtsnd_pcm_release(ss);
-			if (rc)
-				return rc;
+			dev_err(&vdev->dev, "SID %u: invalid I/O queue state\n",
+				ss->sid);
+			return -EBADFD;
 		}
 	}
 
@@ -322,28 +317,23 @@ static int virtsnd_pcm_hw_free(struct snd_pcm_substream *substream)
 static int virtsnd_pcm_prepare(struct snd_pcm_substream *substream)
 {
 	struct virtio_pcm_substream *ss = snd_pcm_substream_chip(substream);
-	snd_pcm_state_t state;
+	struct virtio_device *vdev = ss->snd->vdev;
 	struct virtio_snd_msg *msg;
 	unsigned long flags;
-	int rc;
 
-	snd_pcm_stream_lock_irqsave(substream, flags);
-	state = substream->runtime->status->state;
 	substream->runtime->stop_threshold = substream->runtime->boundary;
-	snd_pcm_stream_unlock_irqrestore(substream, flags);
 
-	if (state != SNDRV_PCM_STATE_SUSPENDED) {
+	if (!atomic_read(&ss->suspended)) {
 		struct virtio_snd_queue *queue = virtsnd_pcm_queue(ss);
 
 		/*
 		 * If we got here after ops->trigger() was called, the queue may
-		 * still contain messages. In this case, we need to reset the
-		 * substream first.
+		 * still contain messages. In this case, return an error
 		 */
 		if (atomic_read(&ss->msg_count)) {
-			rc = virtsnd_pcm_hw_params(substream, NULL);
-			if (rc)
-				return rc;
+			dev_err(&vdev->dev, "SID %u: invalid I/O queue state\n",
+				ss->sid);
+			return -EBADFD;
 		}
 
 		spin_lock_irqsave(&queue->lock, flags);
@@ -355,6 +345,7 @@ static int virtsnd_pcm_prepare(struct snd_pcm_substream *substream)
 
 	atomic_set(&ss->xfer_xrun, 0);
 	atomic_set(&ss->msg_count, 0);
+	atomic_set(&ss->suspended, 0);
 
 	msg = virtsnd_pcm_ctl_msg_alloc(ss, VIRTIO_SND_R_PCM_PREPARE,
 					GFP_KERNEL);
@@ -399,6 +390,7 @@ static int virtsnd_pcm_trigger(struct snd_pcm_substream *substream, int command)
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
 	case SNDRV_PCM_TRIGGER_SUSPEND: {
 		atomic_set(&ss->xfer_enabled, 0);
+		atomic_set(&ss->suspended, 1);
 
 		msg = virtsnd_pcm_ctl_msg_alloc(ss, VIRTIO_SND_R_PCM_STOP,
 						GFP_ATOMIC);
