@@ -264,31 +264,13 @@ int virtsnd_alloc_dmabuf(struct virtio_pcm_substream *substream, size_t size, en
 		goto err;
 	}
 
-	substream->dma_data[index].attach = dma_buf_attach(substream->dma_data[index].dma_buf, &vdev->dev);
-	if (IS_ERR(substream->dma_data[index].attach)) {
-		rc = PTR_ERR(substream->dma_data[index].attach);
-		goto detach_dma_buf;
-	}
-
-	substream->dma_data[index].table = dma_buf_map_attachment(substream->dma_data[index].attach, DMA_BIDIRECTIONAL);
-	if (IS_ERR(substream->dma_data[index].table)) {
-		rc = PTR_ERR(substream->dma_data[index].table);
-		goto detach_dma_buf;
-	}
-
 	rc = dma_buf_vmap(substream->dma_data[index].dma_buf, substream->dma_data[index].vmap);
 	if (rc)
-		goto unmap_attachment;
+		goto put_dma_buf;
 
 	return 0;
 
-unmap_attachment:
-	dma_buf_unmap_attachment(substream->dma_data[index].attach,
-				 substream->dma_data[index].table,
-				 DMA_BIDIRECTIONAL);
-detach_dma_buf:
-	dma_buf_detach(substream->dma_data[index].dma_buf,
-		           substream->dma_data[index].attach);
+put_dma_buf:
 	dma_buf_put(substream->dma_data[index].dma_buf);
 
  err:

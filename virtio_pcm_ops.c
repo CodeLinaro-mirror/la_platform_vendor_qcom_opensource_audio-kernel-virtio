@@ -279,7 +279,7 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 	dma_buf->dev.dev = substream->pcm->card->dev;
 	dma_buf->private_data = NULL;
 	dma_buf->area = ss->dma_data[DMA_BUF_DATA].vmap->vaddr;
-	dma_buf->addr = ss->dma_data[DMA_BUF_DATA].table->sgl->dma_address;
+	dma_buf->addr = 0;
 	dma_buf->bytes = PAGE_ALIGN(buffer_bytes);
 	snd_pcm_set_runtime_buffer(substream, &substream->dma_buffer);
 
@@ -408,16 +408,13 @@ static int virtsnd_pcm_trigger(struct snd_pcm_substream *substream, int command)
 static int virtsnd_pcm_mmap(struct snd_pcm_substream *substream, struct vm_area_struct *vma)
 {
 	int rc = 0;
-	int i;
 	struct virtio_pcm_substream *vss = snd_pcm_substream_chip(substream);
 	struct virtio_device *vdev = vss->snd->vdev;
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	size_t dma_bytes = PAGE_ALIGN(runtime->dma_bytes);
-	unsigned long addr = vma->vm_start;
+	unsigned long len = vma->vm_end - vma->vm_start;
 	unsigned long offset = vma->vm_pgoff * PAGE_SIZE;
-	struct page *page;
-	struct sg_table *table = vss->dma_data[DMA_BUF_DATA].table;
-	struct scatterlist *sg;
+	unsigned long pfn = virt_to_phys((void*)runtime->dma_area) >> PAGE_SHIFT;
 	struct file *fptr = NULL;
 	int data_fd = dma_buf_fd(vss->dma_data[DMA_BUF_DATA].dma_buf, O_CLOEXEC);
 	int pos_fd = dma_buf_fd(vss->dma_data[DMA_BUF_POS].dma_buf, O_CLOEXEC);
@@ -474,44 +471,13 @@ static int virtsnd_pcm_mmap(struct snd_pcm_substream *substream, struct vm_area_
 	}
 
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
-	/* We need to check if a page is associated with this sg list because:
-	 * If the allocation came from a carveout we currently don't have
-	 * pages associated with carved out memory. This might change in the
-	 * future and we can remove this check and the else statement.
-	 */
-	page = sg_page(table->sgl);
-	if (page) {
-		for_each_sg(table->sgl, sg, table->orig_nents, i) {
-			unsigned long remainder = vma->vm_end - addr;
-			unsigned long len;
-			if (!sg) {
-				dev_err(&vdev->dev, "%s: sg is NULL when mmaping", __func__);
-				return -EINVAL;
-			}
-			len = sg_dma_len(sg);
-
-			page = sg_page(sg);
-
-			if (offset >= len) {
-				offset -= len;
-				continue;
-			} else if (offset) {
-				page += offset / PAGE_SIZE;
-				len -= offset;
-				offset = 0;
-			}
-			len = min(len, remainder);
-			remap_pfn_range(vma, addr, page_to_pfn(page), len,
-					vma->vm_page_prot);
-			addr += len;
-			if (addr >= vma->vm_end)
-				return 0;
-		}
+	if (offset >= len) {
+		dev_err(&vdev->dev, "%s: offset is too large, offset %lu, len %lu", __func__, offset, len);
+		return -EINVAL;
 	}
 
-	dev_err(&vdev->dev, "%s: page not found", __func__);
-
-	return -EINVAL;
+	return remap_pfn_range(vma, vma->vm_start, pfn, len,
+			vma->vm_page_prot);
 }
 
 
