@@ -114,6 +114,8 @@ int virtsnd_ctl_msg_send_sync(struct virtio_snd *snd,
 	unsigned int js = msecs_to_jiffies(msg_timeout_ms);
 	struct virtio_snd_hdr *response;
 	struct virtio_snd_hdr *request;
+        struct virtio_snd_queue *queue = virtsnd_control_queue(snd);
+        unsigned long flags;
 
 
 	virtsnd_ctl_msg_ref(vdev, msg);
@@ -129,6 +131,9 @@ int virtsnd_ctl_msg_send_sync(struct virtio_snd *snd,
 		if (!code) {
 			dev_err(&vdev->dev, "control message timeout");
 			code = -EIO;
+			spin_lock_irqsave(&queue->lock, flags);
+                        list_del(&msg->list);
+			spin_unlock_irqrestore(&queue->lock, flags);
 		}
 
 		goto on_failure;
