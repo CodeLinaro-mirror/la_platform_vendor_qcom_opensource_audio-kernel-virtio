@@ -141,6 +141,8 @@ static int virtsnd_pcm_open(struct snd_pcm_substream *substream)
 				snd_pcm_hw_constraint_step(substream->runtime, 0,
 					SNDRV_PCM_HW_PARAM_BUFFER_BYTES, 64);
 
+				atomic_set(&ss->suspended, 0);
+
 				if (stream->substreams[substream->number]->hw.rates & SNDRV_PCM_RATE_KNOT) {
 
 					ret = snd_pcm_hw_constraint_list(substream->runtime, 0,
@@ -173,8 +175,6 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 				 struct snd_pcm_hw_params *hw_params)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
-	snd_pcm_state_t state;
-	unsigned long flags;
 	struct virtio_pcm_substream *ss = snd_pcm_substream_chip(substream);
 	struct virtio_device *vdev = ss->snd->vdev;
 	struct virtio_snd_msg *msg;
@@ -191,20 +191,15 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 	int vrate = -1;
 	int rc;
 
-	snd_pcm_stream_lock_irqsave(substream, flags);
-	state = substream->runtime->status->state;
-	snd_pcm_stream_unlock_irqrestore(substream, flags);
-
-	if (state != SNDRV_PCM_STATE_SUSPENDED) {
+	if (!atomic_read(&ss->suspended)) {
 		/*
 		 * If we got here after ops->trigger() was called, the queue may
-		 * still contain messages. In this case, we need to release the
-		 * substream first.
+		 * still contain messages. In this case, we return an error
 		 */
 		if (atomic_read(&ss->msg_count)) {
-			rc = virtsnd_pcm_release(ss);
-			if (rc)
-				return rc;
+			dev_err(&vdev->dev, "SID %u: invalid I/O queue state\n",
+				ss->sid);
+			return -EBADFD;
 		}
 	}
 
@@ -284,7 +279,7 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 	dma_buf->dev.dev = substream->pcm->card->dev;
 	dma_buf->private_data = NULL;
 	dma_buf->area = ss->dma_data[DMA_BUF_DATA].vmap->vaddr;
-	dma_buf->addr = ss->dma_data[DMA_BUF_DATA].table->sgl->dma_address;
+	dma_buf->addr = 0;
 	dma_buf->bytes = PAGE_ALIGN(buffer_bytes);
 	snd_pcm_set_runtime_buffer(substream, &substream->dma_buffer);
 
@@ -322,28 +317,23 @@ static int virtsnd_pcm_hw_free(struct snd_pcm_substream *substream)
 static int virtsnd_pcm_prepare(struct snd_pcm_substream *substream)
 {
 	struct virtio_pcm_substream *ss = snd_pcm_substream_chip(substream);
-	snd_pcm_state_t state;
+	struct virtio_device *vdev = ss->snd->vdev;
 	struct virtio_snd_msg *msg;
 	unsigned long flags;
-	int rc;
 
-	snd_pcm_stream_lock_irqsave(substream, flags);
-	state = substream->runtime->status->state;
 	substream->runtime->stop_threshold = substream->runtime->boundary;
-	snd_pcm_stream_unlock_irqrestore(substream, flags);
 
-	if (state != SNDRV_PCM_STATE_SUSPENDED) {
+	if (!atomic_read(&ss->suspended)) {
 		struct virtio_snd_queue *queue = virtsnd_pcm_queue(ss);
 
 		/*
 		 * If we got here after ops->trigger() was called, the queue may
-		 * still contain messages. In this case, we need to reset the
-		 * substream first.
+		 * still contain messages. In this case, return an error
 		 */
 		if (atomic_read(&ss->msg_count)) {
-			rc = virtsnd_pcm_hw_params(substream, NULL);
-			if (rc)
-				return rc;
+			dev_err(&vdev->dev, "SID %u: invalid I/O queue state\n",
+				ss->sid);
+			return -EBADFD;
 		}
 
 		spin_lock_irqsave(&queue->lock, flags);
@@ -355,6 +345,7 @@ static int virtsnd_pcm_prepare(struct snd_pcm_substream *substream)
 
 	atomic_set(&ss->xfer_xrun, 0);
 	atomic_set(&ss->msg_count, 0);
+	atomic_set(&ss->suspended, 0);
 
 	msg = virtsnd_pcm_ctl_msg_alloc(ss, VIRTIO_SND_R_PCM_PREPARE,
 					GFP_KERNEL);
@@ -399,6 +390,7 @@ static int virtsnd_pcm_trigger(struct snd_pcm_substream *substream, int command)
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
 	case SNDRV_PCM_TRIGGER_SUSPEND: {
 		atomic_set(&ss->xfer_enabled, 0);
+		atomic_set(&ss->suspended, 1);
 
 		msg = virtsnd_pcm_ctl_msg_alloc(ss, VIRTIO_SND_R_PCM_STOP,
 						GFP_ATOMIC);
@@ -416,16 +408,13 @@ static int virtsnd_pcm_trigger(struct snd_pcm_substream *substream, int command)
 static int virtsnd_pcm_mmap(struct snd_pcm_substream *substream, struct vm_area_struct *vma)
 {
 	int rc = 0;
-	int i;
 	struct virtio_pcm_substream *vss = snd_pcm_substream_chip(substream);
 	struct virtio_device *vdev = vss->snd->vdev;
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	size_t dma_bytes = PAGE_ALIGN(runtime->dma_bytes);
-	unsigned long addr = vma->vm_start;
+	unsigned long len = vma->vm_end - vma->vm_start;
 	unsigned long offset = vma->vm_pgoff * PAGE_SIZE;
-	struct page *page;
-	struct sg_table *table = vss->dma_data[DMA_BUF_DATA].table;
-	struct scatterlist *sg;
+	unsigned long pfn = virt_to_phys((void*)runtime->dma_area) >> PAGE_SHIFT;
 	struct file *fptr = NULL;
 	int data_fd = dma_buf_fd(vss->dma_data[DMA_BUF_DATA].dma_buf, O_CLOEXEC);
 	int pos_fd = dma_buf_fd(vss->dma_data[DMA_BUF_POS].dma_buf, O_CLOEXEC);
@@ -482,44 +471,13 @@ static int virtsnd_pcm_mmap(struct snd_pcm_substream *substream, struct vm_area_
 	}
 
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
-	/* We need to check if a page is associated with this sg list because:
-	 * If the allocation came from a carveout we currently don't have
-	 * pages associated with carved out memory. This might change in the
-	 * future and we can remove this check and the else statement.
-	 */
-	page = sg_page(table->sgl);
-	if (page) {
-		for_each_sg(table->sgl, sg, table->orig_nents, i) {
-			unsigned long remainder = vma->vm_end - addr;
-			unsigned long len;
-			if (!sg) {
-				dev_err(&vdev->dev, "%s: sg is NULL when mmaping", __func__);
-				return -EINVAL;
-			}
-			len = sg_dma_len(sg);
-
-			page = sg_page(sg);
-
-			if (offset >= len) {
-				offset -= len;
-				continue;
-			} else if (offset) {
-				page += offset / PAGE_SIZE;
-				len -= offset;
-				offset = 0;
-			}
-			len = min(len, remainder);
-			remap_pfn_range(vma, addr, page_to_pfn(page), len,
-					vma->vm_page_prot);
-			addr += len;
-			if (addr >= vma->vm_end)
-				return 0;
-		}
+	if (offset >= len) {
+		dev_err(&vdev->dev, "%s: offset is too large, offset %lu, len %lu", __func__, offset, len);
+		return -EINVAL;
 	}
 
-	dev_err(&vdev->dev, "%s: page not found", __func__);
-
-	return -EINVAL;
+	return remap_pfn_range(vma, vma->vm_start, pfn, len,
+			vma->vm_page_prot);
 }
 
 

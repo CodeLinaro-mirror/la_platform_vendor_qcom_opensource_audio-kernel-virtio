@@ -50,7 +50,6 @@ static int virtsnd_card_info(struct virtio_snd *snd)
 
 static int virtsnd_build_devs(struct virtio_snd *snd)
 {
-	static struct snd_device_ops ops = { 0 };
 	struct virtio_device *vdev = snd->vdev;
 	int rc;
 
@@ -63,10 +62,6 @@ static int virtsnd_build_devs(struct virtio_snd *snd)
 
 	rc = virtsnd_card_info(snd);
 	if (rc)
-		return rc;
-
-	rc = snd_device_new(snd->card, SNDRV_DEV_LOWLEVEL, snd, &ops);
-	if (rc < 0)
 		return rc;
 
 	rc = virtsnd_pcm_parse_cfg(snd);
