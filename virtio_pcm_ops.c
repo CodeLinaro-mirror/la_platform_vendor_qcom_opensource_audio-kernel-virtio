@@ -417,7 +417,7 @@ static int virtsnd_pcm_mmap(struct snd_pcm_substream *substream, struct vm_area_
 	unsigned long pfn = virt_to_phys((void*)runtime->dma_area) >> PAGE_SHIFT;
 	struct file *fptr = NULL;
 	int data_fd = dma_buf_fd(vss->dma_data[DMA_BUF_DATA].dma_buf, O_CLOEXEC);
-	int pos_fd = dma_buf_fd(vss->dma_data[DMA_BUF_POS].dma_buf, O_CLOEXEC);
+	int pos_fd = 0;
 
 	/* set write permission for data buffer fd so userspace can write to it */
 	fptr = fget(data_fd);
@@ -437,6 +437,9 @@ static int virtsnd_pcm_mmap(struct snd_pcm_substream *substream, struct vm_area_
 		rc = virtsnd_alloc_dmabuf(vss, sizeof(struct virtio_pcm_push_pull_pos_buf), DMA_BUF_POS);
 		if (rc)
 			return -ENOMEM;
+
+		/* determine fd position buffers after allocation */
+		pos_fd = dma_buf_fd(vss->dma_data[DMA_BUF_POS].dma_buf, O_CLOEXEC);
 
 		/* export data and position buffers to PVM */
 		rc = vsnd_dma_area_export(vss, vss->dma_data[DMA_BUF_DATA].dma_buf,
