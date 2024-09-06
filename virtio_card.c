@@ -329,7 +329,9 @@ static int __init vsnd_init(void)
 	for (i = 0; i < VSND_EVENTQ_SZ; ++i) {
 	}
 
+        pr_info("boot_kpi: M - DRIVER Audio Init\n");
 	rc = virtsnd_build_devs(snd);
+        pr_info("boot_kpi: M - DRIVER Audio Ready\n");
 
 err:
 	return 0;
