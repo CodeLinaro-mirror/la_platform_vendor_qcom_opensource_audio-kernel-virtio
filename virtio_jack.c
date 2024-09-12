@@ -171,7 +171,7 @@ int virtsnd_jack_check_cfg(struct virtio_snd *snd)
 {
 	struct virtio_device *vdev = snd->vdev;
 	int rc;
-	unsigned int i;
+	unsigned int i = 0;
 	struct virtio_snd_jack_info *info;
 
 	virtio_cread(vdev, struct virtio_snd_config, jacks, &i);
