@@ -187,6 +187,7 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 	unsigned int period_bytes;
 	unsigned int periods;
 	unsigned int i;
+	unsigned int is_mmap_noirq;
 	int vformat = -1;
 	int vrate = -1;
 	int rc;
@@ -211,6 +212,7 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 		buffer_bytes = params_buffer_bytes(hw_params);
 		period_bytes = params_period_bytes(hw_params);
 		periods = params_periods(hw_params);
+		is_mmap_noirq = hw_params->flags & SNDRV_PCM_HW_PARAMS_NO_PERIOD_WAKEUP ? 1 : 0;
 	} else {
 		format = runtime->format;
 		channels = runtime->channels;
@@ -218,6 +220,7 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 		buffer_bytes = frames_to_bytes(runtime, runtime->buffer_size);
 		period_bytes = frames_to_bytes(runtime, runtime->period_size);
 		periods = runtime->periods;
+		is_mmap_noirq = 0;
 	}
 
 	for (i = 0; i < ARRAY_SIZE(g_a2v_format_map); ++i)
@@ -249,7 +252,7 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 	request->channels = channels;
 	request->format = vformat;
 	request->rate = vrate;
-	request->is_mmap_noirq = hw_params->flags & SNDRV_PCM_HW_PARAMS_NO_PERIOD_WAKEUP ? 1 : 0;
+	request->is_mmap_noirq = is_mmap_noirq;
 
 	if (ss->features & (1U << VIRTIO_SND_PCM_F_MSG_POLLING))
 		request->features |=
@@ -284,7 +287,7 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 	snd_pcm_set_runtime_buffer(substream, &substream->dma_buffer);
 
 
-	if (!(hw_params->flags & SNDRV_PCM_HW_PARAMS_NO_PERIOD_WAKEUP)) {
+	if (!is_mmap_noirq) {
 	/* Allocate and initialize I/O messages */
 	rc = virtsnd_pcm_msg_alloc(ss, periods, runtime->dma_area,
 				   period_bytes);
