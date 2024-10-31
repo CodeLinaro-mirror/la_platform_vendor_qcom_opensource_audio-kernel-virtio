@@ -25,6 +25,7 @@
 #include <linux/mm.h>
 
 #include "virtio_card.h"
+#define MAX_SEND_PACKET_RETRY    10
 
 /**
  * enum pcm_msg_sg_index - Scatter-gather element indexes for an I/O message
@@ -140,6 +141,7 @@ int virtsnd_pcm_msg_send(struct virtio_pcm_substream *substream)
 	int i;
 	int n;
 	int32_t hab_socket;
+	int retry_times = 0;
 
 	i = (substream->msg_last_enqueued + 1) % runtime->periods;
 	n = runtime->periods - atomic_read(&substream->msg_count);
@@ -159,12 +161,17 @@ int virtsnd_pcm_msg_send(struct virtio_pcm_substream *substream)
 			hab_socket = snd->queues[VIRTIO_SND_VQ_TX].thread_data.hab_socket; // Capture uses TX
 		}
 
-
-		rc = habmm_socket_send(hab_socket, msg, sizeof(*msg), 0);
+ retry_send_packet:
+		rc = habmm_socket_send(hab_socket, msg, sizeof(*msg), HABMM_SOCKET_SEND_FLAGS_NON_BLOCKING);
 		if (rc) {
 			dev_err(&vdev->dev,
 				"SID %u: failed to send I/O message vcid %X ret %d msgsz %zd\n",
 				substream->sid, hab_socket, rc, sizeof(*msg));
+			if ((rc == -EAGAIN) && (retry_times < MAX_SEND_PACKET_RETRY)) {
+				retry_times++;
+				dev_err(&vdev->dev, "send packet retry %d", retry_times);
+				goto retry_send_packet;
+			}
 			atomic_dec(&substream->msg_count);
 			return -EIO;
 		}
