@@ -125,6 +125,7 @@ static int virtsnd_pcm_open(struct snd_pcm_substream *substream)
 	struct virtio_pcm *pcm = snd_pcm_substream_chip(substream);
 	struct virtio_pcm_substream *ss = NULL;
 	int ret = 0;
+	pr_info("kpi : virtsnd_pcm_open: enter\n");
 
 	if (pcm) {
 		switch (substream->stream) {
@@ -323,6 +324,7 @@ static int virtsnd_pcm_prepare(struct snd_pcm_substream *substream)
 	struct virtio_device *vdev = ss->snd->vdev;
 	struct virtio_snd_msg *msg;
 	unsigned long flags;
+	int rc = 0;
 
 	substream->runtime->stop_threshold = substream->runtime->boundary;
 
@@ -355,7 +357,9 @@ static int virtsnd_pcm_prepare(struct snd_pcm_substream *substream)
 	if (IS_ERR(msg))
 		return PTR_ERR(msg);
 
-	return virtsnd_ctl_msg_send_sync(ss->snd, msg);
+	rc = virtsnd_ctl_msg_send_sync(ss->snd, msg);
+	dev_info(&vdev->dev, "kpi : virtsnd_pcm_prepare: exit\n");
+	return rc;
 }
 
 static int virtsnd_pcm_trigger(struct snd_pcm_substream *substream, int command)
