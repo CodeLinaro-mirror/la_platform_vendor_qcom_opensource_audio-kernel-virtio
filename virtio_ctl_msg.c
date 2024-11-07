@@ -118,9 +118,9 @@ int virtsnd_ctl_msg_send_sync(struct virtio_snd *snd,
 	unsigned int js = msecs_to_jiffies(msg_timeout_ms);
 	struct virtio_snd_hdr *response;
 	struct virtio_snd_hdr *request;
-        struct virtio_snd_queue *queue = virtsnd_control_queue(snd);
-        unsigned long flags;
-
+	struct virtio_snd_queue *queue = virtsnd_control_queue(snd);
+	unsigned long flags;
+	struct virtio_snd_msg *msg_itr;
 
 	virtsnd_ctl_msg_ref(vdev, msg);
 	request = sg_virt(&msg->sg_request);
@@ -137,7 +137,12 @@ int virtsnd_ctl_msg_send_sync(struct virtio_snd *snd,
 			code = -EIO;
 		}
 		spin_lock_irqsave(&queue->lock, flags);
-		list_del(&msg->list);
+		list_for_each_entry(msg_itr, &snd->ctl_msgs, list) {
+			if (msg_itr == msg) {
+				list_del(&msg->list);
+				break;
+			}
+		}
 		spin_unlock_irqrestore(&queue->lock, flags);
 		virtsnd_ctl_msg_unref(vdev, msg);
 		goto on_failure;
