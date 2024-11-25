@@ -130,6 +130,27 @@ struct virtio_pcm_push_pull_pos_buf {
 	*/	
 };
 
+struct virtio_pcm_push_pull_pos_buf_awe {
+
+	volatile int32_t write_index;
+	/**
+	* write_index is a frame offset from the start of the circular data buffer.
+	* It specifies where data should be written to.
+	*/
+	volatile int32_t read_index;
+	/**
+	* read_index is a frame offset from the start of the circular data buffer.
+	* It specifies where data should be read from.
+	*/
+	volatile uint32_t wall_clock_us_lsw;
+	/**  Lower 32 bits of the 64-bit timestamp in microseconds.
+	*/
+
+	volatile uint32_t wall_clock__us_msw;
+	/**  Upper 32 bits of the 64-bit timestamp in microseconds.
+	*/
+};
+
 /**
  * struct virtio_pcm_stream - virtio PCM stream representation.
  * @substreams: Virtio substreams belonging to the stream.
