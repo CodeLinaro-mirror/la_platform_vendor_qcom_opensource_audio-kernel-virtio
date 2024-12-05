@@ -29,6 +29,93 @@
 
 #include "virtio_card.h"
 
+
+struct snd_card_pdata {
+	struct kobject snd_card_kobj;
+	int card_status;
+}*snd_card_pdata;
+
+static struct attribute card_state_attr = {
+	.name = "card_state",
+	.mode = 0666,
+};
+
+
+int snd_card_notify_user(snd_card_status_t card_status)
+{
+	snd_card_pdata->card_status = card_status;
+	sysfs_notify(&snd_card_pdata->snd_card_kobj, NULL, "card_state");
+	return 0;
+}
+
+int vsnd_set_card_status(snd_card_status_t card_status)
+{
+	snd_card_pdata->card_status = card_status;
+	return 0;
+}
+
+static ssize_t vsnd_sysfs_show(struct kobject *kobj,
+		struct attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "%d", snd_card_pdata->card_status);
+}
+
+static ssize_t vsnd_sysfs_store(struct kobject *kobj,
+		struct attribute *attr, const char *buf, size_t count)
+{
+	sscanf(buf, "%d", &snd_card_pdata->card_status);
+	sysfs_notify(kobj, NULL, "card_state");
+	return 0;
+}
+
+static void vsnd_sysfs_release(struct kobject *kobj)
+{
+	kfree(snd_card_pdata);
+}
+
+
+static const struct sysfs_ops vsnd_sysfs_ops = {
+	.show = vsnd_sysfs_show,
+	.store = vsnd_sysfs_store,
+};
+
+static struct kobj_type snd_card_ktype = {
+	.release = vsnd_sysfs_release,
+	.sysfs_ops = &vsnd_sysfs_ops,
+};
+
+int vsnd_sysfs_init(void)
+{
+	int rc = 0;
+
+	snd_card_pdata = kcalloc(1, sizeof(struct snd_card_pdata), GFP_KERNEL);
+	if (!snd_card_pdata)
+		return -ENOMEM;
+
+	/* kernel_kobj is the kobject of /sys/kernel/ */
+	rc = kobject_init_and_add(&snd_card_pdata->snd_card_kobj, &snd_card_ktype,
+				   kernel_kobj, "snd_card");
+
+	if (rc < 0) {
+		pr_err("%s: Failed to init and add kobject %s, err = %d\n",
+			__func__, "snd_card", rc);
+		goto fail;
+	}
+
+	rc = sysfs_create_file(&snd_card_pdata->snd_card_kobj, &card_state_attr);
+	if (rc < 0) {
+		pr_err("%s: Failed to add snd_card sysfs entry to %s\n",
+			__func__, "snd_card");
+		goto fail;
+	}
+
+	return rc;
+
+fail:
+	kobject_put(&snd_card_pdata->snd_card_kobj);
+	return rc;
+}
+
 static int virtsnd_card_info(struct virtio_snd *snd)
 {
 	if (VIRTIO_HAS_OPSY_EXTENSION(snd, DEV_EXT_INFO)) {
@@ -82,6 +169,7 @@ static int virtsnd_build_devs(struct virtio_snd *snd)
 }
 
 void process_ctl_msg(struct virtio_snd *snd, void *buff);
+void process_event_msg(struct virtio_snd *snd, void *buff);
 static DECLARE_COMPLETION(setup_done);
 
 struct dma_area_export {
@@ -139,6 +227,10 @@ static int vsnd_kthread(void *d)
 
 		if (p->mmid == MM_AUD_1) {
 			process_ctl_msg(snd, buff);
+		}
+
+		else if (p->mmid == MM_AUD_2) {
+			process_event_msg(snd, buff);
 		}
 
 		else if (p->mmid == MM_AUD_3) {
@@ -238,6 +330,25 @@ void vsnd_dma_area_unexport(struct virtio_pcm_substream* vss, uint32_t export_id
 	vss->export_ready = 0;
 }
 
+void process_event_msg(struct virtio_snd *snd, void *buff)
+{
+	struct virtio_snd_event *msg = (struct virtio_snd_event*)buff;
+	struct virtio_snd_queue *queue = virtsnd_control_queue(snd);
+	unsigned long flags;
+
+	spin_lock_irqsave(&queue->lock, flags);
+	switch(msg->hdr.code) {
+	case VIRTIO_SND_EVT_SSR:
+		snd_card_notify_user(msg->data);
+		break;
+	default:
+		pr_debug("%s: unsupported event received %d\n",
+			__func__, msg->hdr.code);
+		break;
+	}
+	spin_unlock_irqrestore(&queue->lock, flags);
+}
+
 #define VSND_EVENTQ_SZ 32
 
 static void vsnd_reset(struct virtio_device *dev)
@@ -298,6 +409,14 @@ static int __init vsnd_init(void)
 
 	vdev->priv = snd;
 
+	rc = vsnd_sysfs_init();
+	if (rc)
+		pr_err("vsnd_sysfs_init fail, rc = %d\n", rc);
+
+	rc = vsnd_set_card_status(SND_CARD_STATUS_ONLINE);
+	if (rc)
+		pr_err("vsnd_set_card_status fail, rc = %d\n", rc);
+
 	for (i = 0; i < VIRTIO_SND_VQ_MAX; ++i) {
 		spin_lock_init(&snd->queues[i].lock);
 
@@ -343,6 +462,11 @@ static void __exit vsnd_exit(void)
 	struct virtio_snd *snd = vdev->priv;
 
 	pr_info("%s\n", __func__);
+
+	/* kobject_put decrease the kref count. Once the count reaches 0,
+	   object is automatically freed. The release function we defined will be
+	   called to clean up memory allocated by this driver */
+	kobject_put(&snd_card_pdata->snd_card_kobj);
 
 	if (snd->card)
 		snd_card_free(snd->card);

@@ -136,7 +136,6 @@ int virtsnd_pcm_msg_send(struct virtio_pcm_substream *substream)
 	struct snd_pcm_runtime *runtime = substream->substream->runtime;
 	struct virtio_snd *snd = substream->snd;
 	struct virtio_device *vdev = snd->vdev;
-	snd_pcm_uframes_t hw_ptr;
 
 	int i;
 	int n;
@@ -157,11 +156,6 @@ int virtsnd_pcm_msg_send(struct virtio_pcm_substream *substream)
 
 			hab_socket = snd->queues[VIRTIO_SND_VQ_RX].thread_data.hab_socket; // Playback uses RX
 		else {
-			hw_ptr = (snd_pcm_uframes_t)atomic_read(&substream->hw_ptr);
-			msg->desc.offset = frames_to_bytes(runtime, hw_ptr);
-			if (msg->desc.offset + msg->length >= runtime->dma_bytes)
-				msg->length = runtime->dma_bytes - msg->desc.offset;
-
 			hab_socket = snd->queues[VIRTIO_SND_VQ_TX].thread_data.hab_socket; // Capture uses TX
 		}
 
@@ -176,9 +170,6 @@ int virtsnd_pcm_msg_send(struct virtio_pcm_substream *substream)
 		}
 
 		substream->msg_last_enqueued = i;
-
-		if (substream->direction == SNDRV_PCM_STREAM_CAPTURE)
-			break;
 	}
 	return 0;
 }

@@ -125,7 +125,7 @@ int virtsnd_chmap_check_cfg(struct virtio_snd *snd)
 	struct virtio_device *vdev = snd->vdev;
 	int rc;
 	struct virtio_snd_chmap_info *info;
-	unsigned int i;
+	unsigned int i = 0;
 
 	virtio_cread(vdev, struct virtio_snd_config, chmaps, &i);
 	if (snd->nchmaps != i) {

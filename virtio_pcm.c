@@ -505,7 +505,7 @@ int virtsnd_pcm_check_cfg(struct virtio_snd *snd)
 {
 	struct virtio_device *vdev = snd->vdev;
 	struct virtio_snd_pcm_info *info;
-	unsigned int i;
+	unsigned int i = 0;
 	int rc;
 
 	virtio_cread(vdev, struct virtio_snd_config, streams, &i);

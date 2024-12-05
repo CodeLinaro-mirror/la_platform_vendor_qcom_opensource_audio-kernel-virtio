@@ -135,7 +135,10 @@ enum {
 	VIRTIO_SND_R_PCM_COUNT,
 	VIRTIO_SND_R_DC_COUNT,
 
-	VIRTIO_SND_R_PCM_MMAP
+	VIRTIO_SND_R_PCM_MMAP,
+
+	/* Event type for SSR notification */
+	VIRTIO_SND_EVT_SSR,
 };
 
 /* common header */
