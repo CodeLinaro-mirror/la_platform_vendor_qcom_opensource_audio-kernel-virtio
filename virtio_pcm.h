@@ -99,6 +99,7 @@ struct virtio_pcm_substream {
 	u32 export_id;
 	u32 pos_buf_export_id; /* this export id is used in push-pull mode only */
 	struct dma_buf_data dma_data[DMA_BUF_INDEX_MAX + 1];
+	atomic_t first_frame_done;
 };
 
 struct virtio_pcm_push_pull_pos_buf {

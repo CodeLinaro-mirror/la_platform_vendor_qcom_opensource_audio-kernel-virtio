@@ -383,6 +383,7 @@ static int virtsnd_pcm_trigger(struct snd_pcm_substream *substream, int command)
 	case SNDRV_PCM_TRIGGER_RESUME: {
 		int rc;
 
+		pr_info("kpi : SNDRV_PCM_TRIGGER_START: enter\n");
 		if (!(ss->features & (1U << VIRTIO_SND_PCM_F_HOSTLESS)) &&
 		    !(substream->runtime->no_period_wakeup)) {
 			spin_lock(&queue->lock);
@@ -393,13 +394,16 @@ static int virtsnd_pcm_trigger(struct snd_pcm_substream *substream, int command)
 		}
 
 		atomic_set(&ss->xfer_enabled, 1);
+		atomic_set(&ss->first_frame_done, 0);
 
 		msg = virtsnd_pcm_ctl_msg_alloc(ss, VIRTIO_SND_R_PCM_START,
 						GFP_ATOMIC);
 		if (IS_ERR(msg))
 			return PTR_ERR(msg);
 
-		return virtsnd_ctl_msg_send(snd, msg);
+		rc = virtsnd_ctl_msg_send(snd, msg);
+		pr_info("kpi : SNDRV_PCM_TRIGGER_START: exit\n");
+		return rc;
 	}
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
