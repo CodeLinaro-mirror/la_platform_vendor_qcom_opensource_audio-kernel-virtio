@@ -354,6 +354,9 @@ void process_event_msg(struct virtio_snd *snd, void *buff)
 	case VIRTIO_SND_EVT_SSR:
 		snd_card_notify_user(msg->data);
 		break;
+	case VIRTIO_SND_EVT_DC_NOTIFY:
+		virtsnd_dc_event(snd, msg);
+		break;
 	default:
 		pr_debug("%s: unsupported event received %d\n",
 			__func__, msg->hdr.code);
