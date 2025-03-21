@@ -29,6 +29,7 @@
 
 #include "virtio_card.h"
 
+#define HAB_OPEN_TIMEOUT_MS   (3000)
 
 struct snd_card_pdata {
 	struct kobject snd_card_kobj;
@@ -152,19 +153,27 @@ static int virtsnd_build_devs(struct virtio_snd *snd)
 		return rc;
 
 	rc = virtsnd_pcm_parse_cfg(snd);
-	if (rc)
-		return rc;
+	if (rc) {
+		pr_err("%s failed to parse pcm cfg", __func__);
+		goto register_card;
+	}
 
 	rc = virtsnd_dc_parse_cfg(snd);
-	if (rc)
-		return rc;
+	if (rc) {
+		pr_err("%s failed to parse dc cfg", __func__);
+		goto register_card;
+	}
 
 	if (snd->nsubstreams) {
 		rc = virtsnd_pcm_build_devs(snd);
-		if (rc)
-			return rc;
+		if (rc) {
+			pr_err("%s failed to build pcm devs", __func__);
+		}
 	}
 
+register_card:
+	if (rc)
+		pr_err("%s Registering dummy snd card", __func__);
 	return snd_card_register(snd->card);
 }
 
@@ -189,8 +198,7 @@ static int vsnd_kthread(void *d)
 	struct virtio_snd *snd = (struct virtio_snd *)p->data;
 
 	pr_info("%s mmid %d\n", __func__, p->mmid);
-
-	ret = habmm_socket_open(&p->hab_socket, p->mmid, -1, 0);
+	ret = habmm_socket_open(&p->hab_socket, p->mmid, HAB_OPEN_TIMEOUT_MS, 0);
 	pr_info("%s mmid %d open return %d\n", __func__, p->mmid, ret);
 	if (!ret) {
 		pr_info("hab socket open mmid %d OK %X\n", p->mmid,
@@ -200,6 +208,11 @@ static int vsnd_kthread(void *d)
 			complete(&setup_done);
 	} else {
 		pr_err("hab open failed mmid %d ret %d\n", p->mmid, ret);
+		if (p->mmid == MM_AUD_1) {
+			// Mark setup_done to allow dummy snd card to be registered
+			complete(&setup_done);
+		}
+		return 1;
 	}
 
 	buff = kmalloc(sizeof(unsigned char) * HAB_BUFFER_SIZE, GFP_KERNEL);
