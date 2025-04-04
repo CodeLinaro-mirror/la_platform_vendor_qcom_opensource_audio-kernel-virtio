@@ -112,7 +112,7 @@ typedef enum snd_card_status_t {
 static inline void
 virtsnd_strlcpy(char *dst, const char *src, size_t max_size)
 {
-	strlcpy(dst, src, max_size);
+	strscpy(dst, src, max_size);
 	dst[max_size - 1] = 0;
 }
 

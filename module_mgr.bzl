@@ -1,6 +1,5 @@
 load("//build/bazel_common_rules/dist:dist.bzl", "copy_to_dist_dir")
-load("//build/kernel/kleaf:kernel.bzl", "ddk_module",
-                                        "ddk_submodule")
+load("//build/kernel/kleaf:kernel.bzl", "ddk_module", "kernel_module_group")
 
 def _create_module_conditional_src_map(conditional_srcs):
     processed_conditional_srcs = {}
@@ -9,7 +8,7 @@ def _create_module_conditional_src_map(conditional_srcs):
         conditional_src = conditional_srcs[conditional_src_name]
 
         if type(conditional_src) == "list":
-            processed_conditional_srcs[conditional_src_name] = { True: conditional_src }
+            processed_conditional_srcs[conditional_src_name] = {True: conditional_src}
         else:
             processed_conditional_srcs[conditional_src_name] = conditional_src
 
@@ -48,42 +47,48 @@ def _combine_target_module_options(enabled_modules, config_options):
 
     return all_options | modules_options
 
-def _define_target_modules(target, variant, registry, modules, product = None, config_options = [],lunch_target=None):
-
-    if lunch_target != None:
-        if product != None:
-           kernel_build = "{}_{}_{}_{}".format(target, variant, product, lunch_target)
-        else:
-           kernel_build = "{}_{}_{}".format(target, variant, lunch_target)
-    else:
-        if product != None:
-           kernel_build = "{}_{}_{}".format(target, variant, product)
-        else:
-           kernel_build = "{}_{}".format(target, variant)
-
-    dist_target_name = "{}_audio_dist".format(kernel_build)
-    data = [":{}_audio".format(kernel_build)]
-
-    dep_formatter = lambda s : s.replace("%t", target)\
-                                .replace("%v", variant)\
-                                .replace("%p", product if product else "")\
-                                .replace("%b", "{}_{}".format(target, variant))
-
+def _define_target_modules(target, variant, registry, modules, product = None, config_options = []):
+    dep_formatter = lambda s: s.replace("%t", target) \
+        .replace("%v", variant) \
+        .replace("%p", product if product else "") \
+        .replace("%b", "{}_{}".format(target, variant))
+    rule_prefix = "{}_{}_{}".format(target, variant, product) if product else "{}_{}".format(target, variant)
     enabled_modules = _get_enabled_module_objs(registry, modules)
     options = _combine_target_module_options(enabled_modules, config_options)
-    headers = ["//msm-kernel:all_headers"] + registry.hdrs
-    submodule_rules = []
+    headers = select({
+        "//build/kernel/kleaf:socrepo_true": [
+            "//soc-repo:all_headers",
+            "//soc-repo:{}_{}/drivers/firmware/qcom/qcom-scm".format(target, variant),
+            "//soc-repo:{}_{}/drivers/pinctrl/qcom/pinctrl-msm".format(target, variant),
+            "//soc-repo:{}_{}/drivers/soc/qcom/pdr_interface".format(target, variant),
+            "//soc-repo:{}_{}/drivers/remoteproc/rproc_qcom_common".format(target, variant),
+            "//soc-repo:{}_{}/drivers/base/regmap/qti-regmap-debugfs".format(target, variant),
+            "//soc-repo:{}_{}/drivers/power/supply/qti_battery_charger".format(target, variant),
+            "//soc-repo:{}_{}/drivers/soc/qcom/wcd_usbss_i2c".format(target, variant),
+            "//soc-repo:{}_{}/kernel/trace/qcom_ipc_logging".format(target, variant),
+            "//soc-repo:{}_{}/drivers/soc/qcom/socinfo".format(target, variant),
+        ] + registry.hdrs,
+        "//build/kernel/kleaf:socrepo_false": [
+            "//msm-kernel:all_headers".format(target, variant),
+        ] + registry.hdrs,
+    })
+    kernel_build = select({
+        "//build/kernel/kleaf:socrepo_true": "//soc-repo:{}_{}_base_kernel".format(target, variant),
+        "//build/kernel/kleaf:socrepo_false": "//msm-kernel:{}_{}".format(target, variant),
+    })
 
+    submodule_rules = []
     for module in enabled_modules:
-        rule_name = "{}_{}".format(kernel_build, module.name)
+        rule_name = "{}_{}".format(rule_prefix, module.name)
         srcs = _get_module_srcs(module, options)
         deps = headers + [dep_formatter(dep) for dep in module.deps]
 
         if not srcs:
             continue
 
-        ddk_submodule(
+        ddk_module(
             name = rule_name,
+            kernel_build = kernel_build,
             srcs = srcs,
             out = "{}.ko".format(module.name),
             deps = deps,
@@ -92,21 +97,20 @@ def _define_target_modules(target, variant, registry, modules, product = None, c
 
         submodule_rules.append(rule_name)
 
-    ddk_module(
-        name = "{}_audio".format(kernel_build),
-        kernel_build = "//msm-kernel:{}_{}".format(target, variant),
-        deps = submodule_rules
+    kernel_module_group(
+        name = "{}_modules".format(rule_prefix),
+        srcs = submodule_rules
     )
 
     copy_to_dist_dir(
-        name = dist_target_name,
-        data = data,
+        name = "{}_modules_dist".format(rule_prefix),
+        data = submodule_rules,
         dist_dir = "out/target/product/{}/dlkm/lib/modules/".format(target),
         flat = True,
         wipe_dist_dir = False,
         allow_duplicate_filenames = False,
         mode_overrides = {"**/*": "644"},
-        log = "info"
+        log = "info",
     )
 
 def create_module_registry(hdrs = []):
@@ -129,21 +133,23 @@ def create_module_registry(hdrs = []):
         get = module_map.get,
     )
 
-def define_target_modules(target, variant, registry, modules, config_options = [], products = [], lunch_target=None):
+def define_target_modules(target, variants, registry, modules, config_options = [], products = []):
+    for variant in variants:
         if products:
-             for product in products:
-                 _define_target_modules(target = target,
-                                        variant = variant,
-                                        registry = registry,
-                                        modules = modules,
-                                        product = product,
-                                        config_options = config_options,
-                                        lunch_target = lunch_target)
+            for product in products:
+                _define_target_modules(
+                    target = target,
+                    variants = variant,
+                    registry = registry,
+                    modules = modules,
+                    product = product,
+                    config_options = config_options,
+                )
         else:
-             _define_target_modules(target = target,
-                                    variant = variant,
-                                    registry = registry,
-                                    modules = modules,
-                                    config_options = config_options,
-                                    lunch_target = lunch_target)
-
+            _define_target_modules(
+                target = target,
+                variant = variant,
+                registry = registry,
+                modules = modules,
+                config_options = config_options,
+            )

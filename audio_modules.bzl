@@ -17,5 +17,8 @@ audio_modules.register(
         "virtio_pcm_msg.c",
         "virtio_pcm_ops.c"
     ],
-    config_option = "CONFIG_PM_SLEEP"
+    config_option = "CONFIG_PM_SLEEP",
+    deps = [
+        "//soc-repo:%b/drivers/soc/qcom/hab/msm_hab"
+    ],
 )

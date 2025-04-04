@@ -2,7 +2,7 @@ AUDIO_SELECT :=
 
 LOCAL_PATH := $(call my-dir)
 
-#LOCAL_MODULE_DDK_BUILD := true
+LOCAL_MODULE_DDK_BUILD := true
 
 include $(CLEAR_VARS)
 
