@@ -139,6 +139,9 @@ enum {
 
 	/* Event type for SSR notification */
 	VIRTIO_SND_EVT_SSR,
+
+	VIRTIO_SND_R_SHMEM_MAP,
+	VIRTIO_SND_R_SHMEM_UNMAP,
 };
 
 /* common header */
