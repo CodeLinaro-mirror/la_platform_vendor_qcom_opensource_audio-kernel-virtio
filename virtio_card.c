@@ -127,11 +127,10 @@ static int virtsnd_card_info(struct virtio_snd *snd)
 			return code;
 	}
 
-	strlcpy(snd->card->id, "viosnd", sizeof(snd->card->id));
-	strlcpy(snd->card->driver, "virtio_snd", sizeof(snd->card->driver));
-	strlcpy(snd->card->shortname, "VIOSND", sizeof(snd->card->shortname));
-	strlcpy(snd->card->longname, "VirtIO Sound Card",
-		sizeof(snd->card->longname));
+	strscpy(snd->card->id, "viosnd", sizeof(snd->card->id));
+	strscpy(snd->card->driver, "virtio_snd", sizeof(snd->card->driver));
+	strscpy(snd->card->shortname, "VIOSND", sizeof(snd->card->shortname));
+	strscpy(snd->card->longname, "VirtIO Sound Card",sizeof(snd->card->longname));
 
 	return 0;
 }
@@ -354,6 +353,9 @@ void process_event_msg(struct virtio_snd *snd, void *buff)
 	case VIRTIO_SND_EVT_SSR:
 		snd_card_notify_user(msg->data);
 		break;
+	case VIRTIO_SND_EVT_DC_NOTIFY:
+		virtsnd_dc_event(snd, msg);
+		break;
 	default:
 		pr_debug("%s: unsupported event received %d\n",
 			__func__, msg->hdr.code);
@@ -453,7 +455,7 @@ static int __init vsnd_init(void)
 	snd->event_msgs = kmalloc_array(VSND_EVENTQ_SZ,
 					sizeof(*snd->event_msgs), GFP_KERNEL);
 	if (!snd->event_msgs) {
-		pr_err("failed to allocate event array %d bytes\n",
+		pr_err("failed to allocate event array %lu bytes\n",
 		       VSND_EVENTQ_SZ * sizeof(*snd->event_msgs));
 		return -ENOMEM;
 	}

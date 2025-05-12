@@ -77,9 +77,7 @@ static int virtsnd_dc_info(struct snd_kcontrol *kcontrol,
 		if (item >= info->value.enumerated.items)
 			return -EINVAL;
 
-		strlcpy(info->value.enumerated.name,
-			kctl->enum_values[item].name,
-			sizeof(info->value.enumerated.name));
+		strscpy(info->value.enumerated.name,kctl->enum_values[item].name,sizeof(info->value.enumerated.name));
 	}
 
 	memcpy(uinfo, info, sizeof(*uinfo));

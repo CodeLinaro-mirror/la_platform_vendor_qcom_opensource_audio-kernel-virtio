@@ -191,6 +191,11 @@ static void virtsnd_pcm_msg_complete(struct virtio_pcm_msg *msg, size_t size)
 	if (le32_to_cpu(msg->status.status) != VIRTIO_SND_S_OK)
 		return;
 
+	if (!atomic_read(&substream->first_frame_done)) {
+		pr_info("kpi : virtsnd_pcm_msg_complete first_frame_done\n");
+		atomic_set(&substream->first_frame_done, 1);
+	}
+
 	hw_ptr = (snd_pcm_uframes_t)atomic_read(&substream->hw_ptr);
 
 	if (substream->direction == SNDRV_PCM_STREAM_PLAYBACK) {

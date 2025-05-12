@@ -69,7 +69,7 @@ int virtsnd_ctl_msg_send(struct virtio_snd *snd, struct virtio_snd_msg *msg)
 
 	request = (unsigned char*) kzalloc(msg->request_size + msg->request_ext_size, GFP_KERNEL);
 	if (request == NULL) {
-		pr_err("not enough memory to allocate request of size %d\n", msg->request_size + msg->request_ext_size);
+		pr_err("not enough memory to allocate request of size %zu\n", msg->request_size + msg->request_ext_size);
 		goto on_failure;
 	}
 
@@ -93,7 +93,7 @@ int virtsnd_ctl_msg_send(struct virtio_snd *snd, struct virtio_snd_msg *msg)
 	if (!rc) {
 		list_add_tail(&msg->list, &snd->ctl_msgs);
 	} else {
-		pr_err("hab send failed mmid %d socket %X sz %d\n", queue->thread_data.mmid, queue->thread_data.hab_socket, msg->request_size);
+		pr_err("hab send failed mmid %d socket %X sz %zu\n", queue->thread_data.mmid, queue->thread_data.hab_socket, msg->request_size);
 	}
 	spin_unlock_irqrestore(&queue->lock, flags);
 
