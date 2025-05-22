@@ -1,0 +1,23 @@
+package(
+    default_visibility = [
+        "//visibility:public",
+    ],
+)
+
+load("//build/kernel/kleaf:kernel.bzl", "ddk_headers")
+
+ddk_headers(
+    name = "audio_common_headers",
+    hdrs = glob([
+        "*.h",
+    ]),
+    includes = ["include"]
+)
+ddk_headers(
+    name = "audio_headers",
+    hdrs = [":audio_common_headers"]
+)
+
+load(":build/audio_target.bzl", "define_audio_target")
+
+define_audio_target()
