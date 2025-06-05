@@ -12,7 +12,7 @@ ifeq ($(TARGET_DISABLE_AUDIO_VIRTIO), true)
 endif
 
 ifeq ($(AUDIO_DLKM_ENABLE), true)
-  ifeq ($(TARGET_USES_GY), true)
+  ifneq (,$(filter gen4_gvm_gy gen5_gvm gen5_gvm_gy, $(TARGET_BOARD_PLATFORM)$(TARGET_BOARD_SUFFIX)))
       include vendor/qcom/opensource/audio-kernel-virtio/audio_kernel_modules.mk
   endif
   BOARD_VENDOR_KERNEL_MODULES += $(AUDIO_KERNEL_MODULES)
