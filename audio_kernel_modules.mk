@@ -12,7 +12,7 @@ endif
 ifeq ($(BUILD_AUDIO_MODULES),true)
 ifeq ($(TARGET_BOARD_AUTO),true)
 
-ifeq ($(TARGET_USES_GY), true)
+ifneq (,$(filter gen4_gvm_gy gen5_gvm gen5_gvm_gy, $(TARGET_BOARD_PLATFORM)$(TARGET_BOARD_SUFFIX)))
 AUDIO_KERNEL_MODULES += $(KERNEL_MODULES_OUT)/msm_virtio_snd.ko
 endif
 
