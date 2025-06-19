@@ -556,8 +556,7 @@ static int virtsnd_pcm_info(struct virtio_snd *snd, struct snd_pcm *pcm)
 			return code;
 	}
 
-	strlcpy(pcm->name, "VirtIO PCM", sizeof(pcm->name));
-
+	strscpy(pcm->name, "VirtIO PCM", sizeof(pcm->name));
 	return 0;
 }
 
