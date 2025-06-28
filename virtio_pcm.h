@@ -99,6 +99,7 @@ struct virtio_pcm_substream {
 	u32 export_id;
 	u32 pos_buf_export_id; /* this export id is used in push-pull mode only */
 	struct dma_buf_data dma_data[DMA_BUF_INDEX_MAX + 1];
+	atomic_t first_frame_done;
 };
 
 struct virtio_pcm_push_pull_pos_buf {
@@ -128,6 +129,27 @@ struct virtio_pcm_push_pull_pos_buf {
 		For pull mode, the timestamp is the timestamp at which index was updated.
 		For push mode, the timestamp is the buffer or the capture timestamp of the sample at index.
 	*/	
+};
+
+struct virtio_pcm_push_pull_pos_buf_awe {
+
+	volatile int32_t write_index;
+	/**
+	* write_index is a frame offset from the start of the circular data buffer.
+	* It specifies where data should be written to.
+	*/
+	volatile int32_t read_index;
+	/**
+	* read_index is a frame offset from the start of the circular data buffer.
+	* It specifies where data should be read from.
+	*/
+	volatile uint32_t wall_clock_us_lsw;
+	/**  Lower 32 bits of the 64-bit timestamp in microseconds.
+	*/
+
+	volatile uint32_t wall_clock__us_msw;
+	/**  Upper 32 bits of the 64-bit timestamp in microseconds.
+	*/
 };
 
 /**

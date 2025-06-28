@@ -19,6 +19,11 @@
 #include <sound/pcm_params.h>
 
 #include "virtio_card.h"
+#define MAX_VARIANT_NAME 16
+
+static char *audio_variant = "audioreach";
+module_param(audio_variant, charp, 0644);
+MODULE_PARM_DESC(audio_variant, "The audio framework being used from either audioreach or awe");
 
 struct virtsnd_a2v_format {
 	unsigned int alsa_bit;
@@ -315,6 +320,9 @@ static int virtsnd_pcm_hw_free(struct snd_pcm_substream *substream)
 	 */
 	snd_pcm_set_runtime_buffer(substream, NULL);
 
+	if (atomic_read(&substream->mmap_count))
+		atomic_set(&substream->mmap_count, 0);
+
 	return rc;
 }
 
@@ -375,6 +383,7 @@ static int virtsnd_pcm_trigger(struct snd_pcm_substream *substream, int command)
 	case SNDRV_PCM_TRIGGER_RESUME: {
 		int rc;
 
+		pr_info("kpi : SNDRV_PCM_TRIGGER_START: enter\n");
 		if (!(ss->features & (1U << VIRTIO_SND_PCM_F_HOSTLESS)) &&
 		    !(substream->runtime->no_period_wakeup)) {
 			spin_lock(&queue->lock);
@@ -385,13 +394,16 @@ static int virtsnd_pcm_trigger(struct snd_pcm_substream *substream, int command)
 		}
 
 		atomic_set(&ss->xfer_enabled, 1);
+		atomic_set(&ss->first_frame_done, 0);
 
 		msg = virtsnd_pcm_ctl_msg_alloc(ss, VIRTIO_SND_R_PCM_START,
 						GFP_ATOMIC);
 		if (IS_ERR(msg))
 			return PTR_ERR(msg);
 
-		return virtsnd_ctl_msg_send(snd, msg);
+		rc = virtsnd_ctl_msg_send(snd, msg);
+		pr_info("kpi : SNDRV_PCM_TRIGGER_START: exit\n");
+		return rc;
 	}
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
@@ -421,7 +433,6 @@ static int virtsnd_pcm_mmap(struct snd_pcm_substream *substream, struct vm_area_
 	size_t dma_bytes = PAGE_ALIGN(runtime->dma_bytes);
 	unsigned long len = vma->vm_end - vma->vm_start;
 	unsigned long offset = vma->vm_pgoff * PAGE_SIZE;
-	unsigned long pfn = virt_to_phys((void*)runtime->dma_area) >> PAGE_SHIFT;
 	struct file *fptr = NULL;
 	int data_fd = dma_buf_fd(vss->dma_data[DMA_BUF_DATA].dma_buf, O_CLOEXEC);
 	int pos_fd = 0;
@@ -478,6 +489,15 @@ static int virtsnd_pcm_mmap(struct snd_pcm_substream *substream, struct vm_area_
 		rc = virtsnd_ctl_msg_send_sync(vss->snd, data_msg);
 		if (rc)
 			return rc;
+
+		if (!strncmp(audio_variant, "awe", strlen("awe"))) {
+			struct virtio_pcm_push_pull_pos_buf_awe *pos_buf = (struct virtio_pcm_push_pull_pos_buf_awe*)
+									vss->dma_data[DMA_BUF_POS].vmap->vaddr;
+			if (vss->direction == SNDRV_PCM_STREAM_PLAYBACK)
+				pos_buf->write_index = INT_MAX;
+			else
+				pos_buf->read_index = INT_MAX;
+		}
 	}
 
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
@@ -486,8 +506,7 @@ static int virtsnd_pcm_mmap(struct snd_pcm_substream *substream, struct vm_area_
 		return -EINVAL;
 	}
 
-	return remap_pfn_range(vma, vma->vm_start, pfn, len,
-			vma->vm_page_prot);
+	return dma_buf_mmap(vss->dma_data[DMA_BUF_DATA].dma_buf, vma, vma->vm_pgoff);
 }
 
 
@@ -500,32 +519,42 @@ virtsnd_pcm_pointer(struct snd_pcm_substream *substream)
 		return SNDRV_PCM_POS_XRUN;
 
 	if (substream->runtime->no_period_wakeup) {
-
-		struct virtio_pcm_push_pull_pos_buf* pos_buf = (struct virtio_pcm_push_pull_pos_buf*)
-							      ss->dma_data[DMA_BUF_POS].vmap->vaddr;
-		uint32_t frame_cnt1, frame_cnt2;
-		uint32_t read_index = 0;
 		snd_pcm_sframes_t hw_frame_ptr;
 		snd_pcm_sframes_t period_size = substream->runtime->period_size;
 
-		int i, j;
+		if (!strncmp(audio_variant, "awe", strlen("awe"))) {
+			struct virtio_pcm_push_pull_pos_buf_awe *pos_buf = (struct virtio_pcm_push_pull_pos_buf_awe*)
+									ss->dma_data[DMA_BUF_POS].vmap->vaddr;
+			if (ss->direction == SNDRV_PCM_STREAM_PLAYBACK)
+				hw_frame_ptr = pos_buf->read_index;
+			else
+				hw_frame_ptr = pos_buf->write_index;
+		} else {
 
-		/* try to get the latest update in the pos buffer */
-		for (i = 0; i < 2; i++) {
-			/* retry until there is an update from DSP */
-			for (j = 0; j < 5; j++) {
-				frame_cnt1 = pos_buf->frame_counter;
-				if (frame_cnt1 != 0)
-					break;
+			struct virtio_pcm_push_pull_pos_buf* pos_buf = (struct virtio_pcm_push_pull_pos_buf*)
+							      ss->dma_data[DMA_BUF_POS].vmap->vaddr;
+			uint32_t frame_cnt1, frame_cnt2;
+			uint32_t read_index = 0;
+
+			int i, j;
+
+			/* try to get the latest update in the pos buffer */
+			for (i = 0; i < 2; i++) {
+				/* retry until there is an update from DSP */
+				for (j = 0; j < 5; j++) {
+					frame_cnt1 = pos_buf->frame_counter;
+					if (frame_cnt1 != 0)
+						break;
+				}
+				read_index = pos_buf->index;
+				frame_cnt2 = pos_buf->frame_counter;
+
+				if (frame_cnt1 != frame_cnt2)
+					continue;
 			}
-			read_index = pos_buf->index;
-			frame_cnt2 = pos_buf->frame_counter;
 
-			if (frame_cnt1 != frame_cnt2)
-				continue;
+			hw_frame_ptr = bytes_to_frames(substream->runtime, read_index);
 		}
-
-		hw_frame_ptr = bytes_to_frames(substream->runtime, read_index);
 		return (hw_frame_ptr/period_size) * period_size;
 	}
 

@@ -27,6 +27,8 @@
 #include "virtio_card.h"
 #include "virtio_ctl_msg.h"
 
+#define MAX_SEND_PACKET_RETRY    10
+
 static int msg_timeout_ms = 1000;
 module_param(msg_timeout_ms, int, 0644);
 MODULE_PARM_DESC(msg_timeout_ms, "Message completion timeout in milliseconds");
@@ -66,10 +68,11 @@ int virtsnd_ctl_msg_send(struct virtio_snd *snd, struct virtio_snd_msg *msg)
 	unsigned int nsgs = 0;
 	unsigned long flags;
 	unsigned char *request = NULL;
+	int retry_times = 0;
 
 	request = (unsigned char*) kzalloc(msg->request_size + msg->request_ext_size, GFP_KERNEL);
 	if (request == NULL) {
-		pr_err("not enough memory to allocate request of size %d\n", msg->request_size + msg->request_ext_size);
+		pr_err("not enough memory to allocate request of size %zu\n", msg->request_size + msg->request_ext_size);
 		goto on_failure;
 	}
 
@@ -89,11 +92,17 @@ int virtsnd_ctl_msg_send(struct virtio_snd *snd, struct virtio_snd_msg *msg)
 	}
 
 	spin_lock_irqsave(&queue->lock, flags);
-	rc = habmm_socket_send(queue->thread_data.hab_socket, request, msg->request_size + msg->request_ext_size, 0);
+retry_send_packet:
+	rc = habmm_socket_send(queue->thread_data.hab_socket, request, msg->request_size + msg->request_ext_size, HABMM_SOCKET_SEND_FLAGS_NON_BLOCKING);
 	if (!rc) {
 		list_add_tail(&msg->list, &snd->ctl_msgs);
 	} else {
-		pr_err("hab send failed mmid %d socket %X sz %d\n", queue->thread_data.mmid, queue->thread_data.hab_socket, msg->request_size);
+		pr_err("hab send failed mmid %d socket %X sz %zu\n", queue->thread_data.mmid, queue->thread_data.hab_socket, msg->request_size);
+		if ((rc == -EAGAIN) && (retry_times < MAX_SEND_PACKET_RETRY)) {
+			retry_times++;
+			pr_err("send ctl msg retry %d", retry_times);
+			goto retry_send_packet;
+		}
 	}
 	spin_unlock_irqrestore(&queue->lock, flags);
 

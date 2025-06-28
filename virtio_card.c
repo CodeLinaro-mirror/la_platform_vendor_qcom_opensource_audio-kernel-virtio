@@ -29,6 +29,7 @@
 
 #include "virtio_card.h"
 
+#define HAB_OPEN_TIMEOUT_MS   (3000)
 
 struct snd_card_pdata {
 	struct kobject snd_card_kobj;
@@ -126,11 +127,10 @@ static int virtsnd_card_info(struct virtio_snd *snd)
 			return code;
 	}
 
-	strlcpy(snd->card->id, "viosnd", sizeof(snd->card->id));
-	strlcpy(snd->card->driver, "virtio_snd", sizeof(snd->card->driver));
-	strlcpy(snd->card->shortname, "VIOSND", sizeof(snd->card->shortname));
-	strlcpy(snd->card->longname, "VirtIO Sound Card",
-		sizeof(snd->card->longname));
+	strscpy(snd->card->id, "viosnd", sizeof(snd->card->id));
+	strscpy(snd->card->driver, "virtio_snd", sizeof(snd->card->driver));
+	strscpy(snd->card->shortname, "VIOSND", sizeof(snd->card->shortname));
+	strscpy(snd->card->longname, "VirtIO Sound Card",sizeof(snd->card->longname));
 
 	return 0;
 }
@@ -152,19 +152,27 @@ static int virtsnd_build_devs(struct virtio_snd *snd)
 		return rc;
 
 	rc = virtsnd_pcm_parse_cfg(snd);
-	if (rc)
-		return rc;
+	if (rc) {
+		pr_err("%s failed to parse pcm cfg", __func__);
+		goto register_card;
+	}
 
 	rc = virtsnd_dc_parse_cfg(snd);
-	if (rc)
-		return rc;
+	if (rc) {
+		pr_err("%s failed to parse dc cfg", __func__);
+		goto register_card;
+	}
 
 	if (snd->nsubstreams) {
 		rc = virtsnd_pcm_build_devs(snd);
-		if (rc)
-			return rc;
+		if (rc) {
+			pr_err("%s failed to build pcm devs", __func__);
+		}
 	}
 
+register_card:
+	if (rc)
+		pr_err("%s Registering dummy snd card", __func__);
 	return snd_card_register(snd->card);
 }
 
@@ -189,8 +197,7 @@ static int vsnd_kthread(void *d)
 	struct virtio_snd *snd = (struct virtio_snd *)p->data;
 
 	pr_info("%s mmid %d\n", __func__, p->mmid);
-
-	ret = habmm_socket_open(&p->hab_socket, p->mmid, -1, 0);
+	ret = habmm_socket_open(&p->hab_socket, p->mmid, HAB_OPEN_TIMEOUT_MS, 0);
 	pr_info("%s mmid %d open return %d\n", __func__, p->mmid, ret);
 	if (!ret) {
 		pr_info("hab socket open mmid %d OK %X\n", p->mmid,
@@ -200,6 +207,11 @@ static int vsnd_kthread(void *d)
 			complete(&setup_done);
 	} else {
 		pr_err("hab open failed mmid %d ret %d\n", p->mmid, ret);
+		if (p->mmid == MM_AUD_1) {
+			// Mark setup_done to allow dummy snd card to be registered
+			complete(&setup_done);
+		}
+		return 1;
 	}
 
 	buff = kmalloc(sizeof(unsigned char) * HAB_BUFFER_SIZE, GFP_KERNEL);
@@ -341,6 +353,9 @@ void process_event_msg(struct virtio_snd *snd, void *buff)
 	case VIRTIO_SND_EVT_SSR:
 		snd_card_notify_user(msg->data);
 		break;
+	case VIRTIO_SND_EVT_DC_NOTIFY:
+		virtsnd_dc_event(snd, msg);
+		break;
 	default:
 		pr_debug("%s: unsupported event received %d\n",
 			__func__, msg->hdr.code);
@@ -440,7 +455,7 @@ static int __init vsnd_init(void)
 	snd->event_msgs = kmalloc_array(VSND_EVENTQ_SZ,
 					sizeof(*snd->event_msgs), GFP_KERNEL);
 	if (!snd->event_msgs) {
-		pr_err("failed to allocate event array %d bytes\n",
+		pr_err("failed to allocate event array %lu bytes\n",
 		       VSND_EVENTQ_SZ * sizeof(*snd->event_msgs));
 		return -ENOMEM;
 	}

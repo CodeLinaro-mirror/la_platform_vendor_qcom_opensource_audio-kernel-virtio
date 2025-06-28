@@ -92,6 +92,9 @@ int virtsnd_pcm_msg_alloc(struct virtio_pcm_substream *substream,
 	if (!substream->msgs)
 		return -ENOMEM;
 
+	if (IS_ERR_OR_NULL((void*)substream->dma_data[DMA_BUF_DATA].dma_buf))
+		return -ENOMEM;
+
 	/* export dma area to remote VM */
 	ret = vsnd_dma_area_export(substream, substream->dma_data[DMA_BUF_DATA].dma_buf, dma_bytes,
 				   &substream->export_id);
@@ -190,6 +193,11 @@ static void virtsnd_pcm_msg_complete(struct virtio_pcm_msg *msg, size_t size)
 	/* TODO: propagate an error to upper layer? */
 	if (le32_to_cpu(msg->status.status) != VIRTIO_SND_S_OK)
 		return;
+
+	if (!atomic_read(&substream->first_frame_done)) {
+		pr_info("kpi : virtsnd_pcm_msg_complete first_frame_done\n");
+		atomic_set(&substream->first_frame_done, 1);
+	}
 
 	hw_ptr = (snd_pcm_uframes_t)atomic_read(&substream->hw_ptr);
 
