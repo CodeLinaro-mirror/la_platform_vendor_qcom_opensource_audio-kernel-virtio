@@ -23,7 +23,10 @@
  */
 #include <sound/control.h>
 #include <linux/virtio_config.h>
-
+#include <linux/string.h>
+#include <linux/dma-buf.h>
+#include <linux/dma-heap.h>
+#include <linux/limits.h>
 #include "virtio_card.h"
 
 /**
@@ -96,7 +99,6 @@ static int virtsnd_dc_get(struct snd_kcontrol *kcontrol,
 	struct virtio_snd_dc_hdr *hdr;
 	unsigned int subcid = snd_ctl_get_ioff(kcontrol, &ucontrol->id);
 	struct scatterlist sg;
-
 	msg = virtsnd_ctl_msg_alloc(vdev, sizeof(*hdr),
 				    sizeof(struct virtio_snd_hdr), GFP_KERNEL);
 	if (IS_ERR(msg))
@@ -110,8 +112,8 @@ static int virtsnd_dc_get(struct snd_kcontrol *kcontrol,
 	sg_init_one(&sg, ucontrol, sizeof(*ucontrol));
 	msg->sg_response_ext = &sg;
 
-        msg->reply = ucontrol;
-        msg->reply_size = sizeof(*ucontrol);
+	msg->reply = ucontrol;
+	msg->reply_size = sizeof(*ucontrol);
 
 	return virtsnd_ctl_msg_send_sync(snd, msg);
 }
@@ -125,7 +127,6 @@ static int virtsnd_dc_put(struct snd_kcontrol *kcontrol,
 	struct virtio_snd_dc_hdr *hdr;
 	unsigned int subcid = snd_ctl_get_ioff(kcontrol, &ucontrol->id);
 	struct scatterlist sg;
-
 	msg = virtsnd_ctl_msg_alloc(vdev, sizeof(*hdr),
 				    sizeof(struct virtio_snd_hdr), GFP_KERNEL);
 	if (IS_ERR(msg))
@@ -139,9 +140,195 @@ static int virtsnd_dc_put(struct snd_kcontrol *kcontrol,
 	sg_init_one(&sg, ucontrol, sizeof(*ucontrol));
 	msg->sg_request_ext = &sg;
 
-        msg->request_ext_size = sizeof(*ucontrol);
+	msg->request_ext_size = sizeof(*ucontrol);
 
 	return virtsnd_ctl_msg_send_sync(snd, msg);
+}
+
+static int vsnd_dc_dma_area_export(struct virtio_snd *snd,
+	struct dma_buf* dma_area, size_t dma_bytes,
+	uint32_t *export_id)
+{
+	int ret;
+	int32_t hab_socket;
+
+	/* use control queue to export dmabuf */
+
+	hab_socket = snd->queues[VIRTIO_SND_VQ_CONTROL].thread_data.hab_socket;
+	if (hab_socket <= 0) {
+		dev_err(&snd->vdev->dev, "Invalid HAB socket %d", hab_socket);
+		*export_id = 0;
+		return -EINVAL;
+	}
+	ret = habmm_export(hab_socket, dma_area, dma_bytes, export_id, HABMM_EXPIMP_FLAGS_DMABUF);
+	if (!ret) {
+		dev_info(&snd->vdev->dev,"dma area export ok on RX %zu bytes exp id %d\n",
+			dma_bytes, *export_id);
+	} else {
+		dev_err(&snd->vdev->dev,
+			"dma area export failed %d vcid %X", ret, hab_socket);
+		*export_id = 0;
+	}
+	return ret;
+}
+
+static void vsnd_dc_dma_area_unexport(struct virtio_snd *snd, uint32_t export_id)
+{
+	int32_t hab_socket;
+	int ret;
+
+	/* use control queue to unexport dmabuf */
+	hab_socket = snd->queues[VIRTIO_SND_VQ_CONTROL].thread_data.hab_socket;
+	if (hab_socket <= 0) {
+		dev_err(&snd->vdev->dev, "Invalid HAB socket %d", hab_socket);
+		return;
+	}
+	ret = habmm_unexport(hab_socket, export_id, HABMM_EXPIMP_FLAGS_DMABUF);
+	if (ret)
+		dev_err(&snd->vdev->dev, "%s: habmm_unexport failed: %d", __func__, ret);
+
+}
+
+static int virtsnd_dc_shmem_map_put(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	struct virtio_snd *snd = kcontrol->private_data;
+	struct virtio_device *vdev = snd->vdev;
+	struct virtio_snd_msg *msg;
+	struct virtio_snd_dc_hdr *hdr;
+	unsigned int subcid = snd_ctl_get_ioff(kcontrol, &ucontrol->id);
+	struct scatterlist sg;
+	struct dma_buf *dma_buf = NULL;
+	int rc = -EINVAL;
+	size_t alloc_size = 0;
+	uint32_t export_id = 0;
+	uint32_t *pint = (uint32_t *)&ucontrol->value.bytes.data[0];
+	// ucontrol has expected elemenents in ucontrol->value.bytes.value[]
+	// [0] - data_export_id OUT
+	// [1] - fd
+	// [2] - export_fd (ignored)
+	// [3] - data_size IN
+	// [4-7] -addr_lsw 0(ignored)
+	// [8-11] -addr_msw 0(ignored)
+	int fd = 0;
+
+	if (pint[3] == 0 || PAGE_ALIGN(pint[3]) < pint[3]) {
+		dev_err(&vdev->dev, "virtsnd_dc_shmem_map_put: invalid allocation size %u", pint[3]);
+		rc = -EINVAL;
+		goto exit;
+	}
+	alloc_size = PAGE_ALIGN(pint[3]);
+	fd = pint[1];
+	if (fd < 0) {
+		dev_err(&vdev->dev, "virtsnd_dc_shmem_map_put: invalid fd %d", fd);
+		rc = -EINVAL;
+		goto exit;
+	}
+
+	dma_buf = dma_buf_get(fd);
+	if (IS_ERR_OR_NULL(dma_buf)) {
+		dev_err(&vdev->dev,
+			"virtsnd_dc_shmem_map_put: failed to get dmabuf with fd %d",fd);
+		rc = -ENOMEM;
+		goto exit;
+	}
+
+	rc = vsnd_dc_dma_area_export(snd, dma_buf, alloc_size, &export_id);
+	if (rc || export_id == 0){
+		dev_err(&vdev->dev,
+			"dma_area_export fails %d",rc);
+		goto exit;
+	}
+	msg = virtsnd_ctl_msg_alloc(vdev, sizeof(*hdr),
+			sizeof(struct virtio_snd_hdr), GFP_KERNEL);
+	if (IS_ERR(msg)){
+		dev_err(&vdev->dev,
+			"Failed to allocate message!");
+		vsnd_dc_dma_area_unexport(snd, export_id);
+		rc = -ENOMEM;
+		goto exit;
+	}
+
+	hdr = sg_virt(&msg->sg_request);
+	hdr->hdr.code = cpu_to_virtio32(vdev, VIRTIO_SND_R_SHMEM_MAP);
+	hdr->control_id = cpu_to_virtio16(vdev, kcontrol->private_value);
+	hdr->subcontrol_id = cpu_to_virtio16(vdev, subcid);
+
+	pint[0] = cpu_to_virtio32(vdev,export_id);
+	pint[1] = cpu_to_virtio32(vdev,fd);//data_fd
+
+	sg_init_one(&sg, ucontrol, sizeof(*ucontrol));
+	msg->sg_request_ext = &sg;
+
+	msg->request_ext_size = sizeof(*ucontrol);
+	rc = virtsnd_ctl_msg_send_sync(snd, msg);
+	if(rc){
+		dev_err(&vdev->dev,
+			"ShmemMap:failed to send message, err %d!", rc);
+	}
+exit:
+	if (!IS_ERR_OR_NULL(dma_buf))
+		dma_buf_put(dma_buf);
+	return rc;
+}
+
+
+static int virtsnd_dc_shmem_unmap_put(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	struct virtio_snd *snd = kcontrol->private_data;
+	struct virtio_device *vdev = snd->vdev;
+	struct virtio_snd_msg *msg;
+	struct virtio_snd_dc_hdr *hdr;
+	unsigned int subcid = snd_ctl_get_ioff(kcontrol, &ucontrol->id);
+	struct scatterlist sg;
+	uint32_t export_id = 0;
+	int rc = 0;
+	int fd = 0;
+	uint32_t *pint = (uint32_t *)&ucontrol->value.bytes.data[0];
+	// ucontrol has expected elemenents in ucontrol->value.bytes.value[]
+	// [0] - data_export_id OUT
+	// [1] - fd
+	// [2] - export_fd (ignored)
+	// [3] - data_size IN
+	// [4-7] -addr_lsw 0(ignored)
+	// [8-11] -addr_msw 0(ignored)
+	dev_info(&vdev->dev,"Enter virtsnd_dc_shmem_unmap_put expid %08x, fd %08x",pint[0], pint[1]);
+
+	export_id = pint[0];
+	fd = pint[1];
+	if (export_id == 0 || fd < 0){
+		dev_err(&vdev->dev, "virtsnd_dc_shmem_unmap_put: invalid input data");
+		rc = -EINVAL;
+		goto exit;
+	}
+
+	msg = virtsnd_ctl_msg_alloc(vdev, sizeof(*hdr),
+			sizeof(struct virtio_snd_hdr), GFP_KERNEL);
+	if (IS_ERR(msg)){
+		rc = -ENOMEM;
+		goto exit;
+	}
+
+	hdr = sg_virt(&msg->sg_request);
+	hdr->hdr.code = cpu_to_virtio32(vdev, VIRTIO_SND_R_SHMEM_UNMAP);
+	hdr->control_id = cpu_to_virtio16(vdev, kcontrol->private_value);
+	hdr->subcontrol_id = cpu_to_virtio16(vdev, subcid);
+
+	sg_init_one(&sg, ucontrol, sizeof(*ucontrol));
+	msg->sg_request_ext = &sg;
+
+	msg->request_ext_size = sizeof(*ucontrol);
+
+	rc = virtsnd_ctl_msg_send_sync(snd, msg);
+	if(rc){
+		dev_err(&vdev->dev,
+			"ShmemUnmap:failed to send message, err %d!", rc);
+	}
+
+	vsnd_dc_dma_area_unexport(snd, export_id);
+exit:
+	return rc;
 }
 
 static int virtsnd_dc_tlv_op(struct snd_kcontrol *kcontrol, int op_flag,
@@ -246,8 +433,8 @@ static int virtsnd_dc_query_enum_info(struct virtio_snd *snd, unsigned int cid,
 	sg_init_one(&sg_response_ext, values, nvalues * sizeof(*values));
 	msg->sg_response_ext = &sg_response_ext;
 
-        msg->reply = values;
-        msg->reply_size = nvalues * sizeof(*values);
+	msg->reply = values;
+	msg->reply_size = nvalues * sizeof(*values);
 	code = virtsnd_ctl_msg_send_sync(snd, msg);
 	if (code) {
 		dev_warn(&vdev->dev,
@@ -335,8 +522,13 @@ static void virtsnd_dc_work(struct work_struct *work)
 
 		kctl_new.info = virtsnd_dc_info;
 		kctl_new.get = virtsnd_dc_get;
-		kctl_new.put = virtsnd_dc_put;
-
+		if (!strncmp(kctl_new.name, "ShmemMap", strlen("ShmemMap"))){
+			kctl_new.put = virtsnd_dc_shmem_map_put;
+		} else if (!strncmp(kctl_new.name, "ShmemUnmap", strlen("ShmemUnmap"))){
+			kctl_new.put = virtsnd_dc_shmem_unmap_put;
+		} else {
+			kctl_new.put = virtsnd_dc_put;
+		}
 		kctl->kctl = snd_ctl_new1(&kctl_new, snd);
 		if (!kctl->kctl) {
 			dev_warn(&vdev->dev,
