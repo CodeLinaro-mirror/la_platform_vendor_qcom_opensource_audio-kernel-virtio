@@ -111,7 +111,7 @@ enum {
 	VIRTIO_SND_S_BAD_MSG,
 	VIRTIO_SND_S_NOT_SUPP,
 	VIRTIO_SND_S_IO_ERR,
-
+	VIRTIO_SND_S_IO_CORE_ERR,
 	/* --- OpenSynergy extensions --------------------------------------- */
 	VIRTIO_SND_R_OPSY_INFO = 0xf000,
 
