@@ -170,6 +170,9 @@ int virtsnd_ctl_msg_send_sync(struct virtio_snd *snd,
 	case VIRTIO_SND_S_IO_ERR:
 		code = -EIO;
 		break;
+	case VIRTIO_SND_S_IO_CORE_ERR:
+		code = ENOTTY;
+		break;
 	default:
 		code = -EPERM;
 		break;
