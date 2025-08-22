@@ -70,7 +70,7 @@ int virtsnd_ctl_msg_send(struct virtio_snd *snd, struct virtio_snd_msg *msg)
 	unsigned char *request = NULL;
 	int retry_times = 0;
 
-	request = (unsigned char*) kzalloc(msg->request_size + msg->request_ext_size, GFP_KERNEL);
+	request = (unsigned char*) kzalloc(msg->request_size + msg->request_ext_size, GFP_ATOMIC);
 	if (request == NULL) {
 		pr_err("not enough memory to allocate request of size %zu\n", msg->request_size + msg->request_ext_size);
 		goto on_failure;
