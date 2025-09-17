@@ -153,7 +153,6 @@ int virtsnd_ctl_msg_send_sync(struct virtio_snd *snd,
 			}
 		}
 		spin_unlock_irqrestore(&queue->lock, flags);
-		virtsnd_ctl_msg_unref(vdev, msg);
 		goto on_failure;
 	}
 
