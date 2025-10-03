@@ -142,6 +142,8 @@ enum {
 
 	VIRTIO_SND_R_SHMEM_MAP,
 	VIRTIO_SND_R_SHMEM_UNMAP,
+
+	VIRTIO_SND_R_VERSION,
 };
 
 /* common header */
@@ -325,6 +327,30 @@ struct virtio_snd_pcm_set_params {
 	__u8 is_mmap_noirq;
 };
 
+/* set PCM stream format v2*/
+struct virtio_snd_pcm_set_params_v2 {
+        /* .code = VIRTIO_SND_R_PCM_SET_PARAMS */
+        struct virtio_snd_pcm_hdr hdr;
+        /* size of the hardware buffer */
+        __le32 buffer_bytes;
+        /* size of the hardware period */
+        __le32 period_bytes;
+        /* selected feature bit map (1 << VIRTIO_SND_PCM_F_XXX) */
+        __le32 features;
+        /* selected # of channels */
+        __u8 channels;
+        /* selected sample format (VIRTIO_SND_PCM_FMT_XXX) */
+        __u8 format;
+        /* selected frame rate (VIRTIO_SND_PCM_RATE_XXX) */
+        __u8 rate;
+
+        __u8 is_mmap_noirq;
+
+        /* fd exported to remote VM */
+        __u32 export_id;
+        /* page size aligned buffer_bytes */
+        __u32 dma_bytes;
+};
 
 struct virtio_snd_pcm_push_pull_info {
 	struct virtio_snd_pcm_hdr hdr;
@@ -508,4 +534,8 @@ struct virtio_snd_dc_event {
 	__le16 mask;
 };
 
+enum {
+	VSND_VERSION_1 = 0,
+	VSND_VERSION_2 = 1,
+};
 #endif /* VIRTIO_SND_IF_H */
