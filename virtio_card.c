@@ -135,6 +135,46 @@ static int virtsnd_card_info(struct virtio_snd *snd)
 	return 0;
 }
 
+static int vsnd_get_version_info(struct virtio_snd *snd)
+{
+	struct virtio_device *vdev = snd->vdev;
+	struct virtio_snd_msg *msg;
+	struct virtio_snd_hdr *hdr;
+	struct scatterlist sg_response_ext;
+	int rc = 0;
+
+	__u32 *version = devm_kzalloc(&vdev->dev, sizeof(*version), GFP_KERNEL);
+	if (!version) {
+		dev_err(&vdev->dev, "failed to allocate memory for version check\n");
+		return -ENOMEM;
+	}
+
+	 msg = virtsnd_ctl_msg_alloc(vdev, sizeof(*hdr),
+					sizeof(struct virtio_snd_hdr), GFP_KERNEL);
+	if (IS_ERR(msg)) {
+		devm_kfree(&vdev->dev, version);
+		return PTR_ERR(msg);
+	}
+
+	hdr = sg_virt(&msg->sg_request);
+	hdr->code = cpu_to_virtio32(vdev, VIRTIO_SND_R_VERSION);
+
+	sg_init_one(&sg_response_ext, version, sizeof(*version));
+	msg->sg_response_ext = &sg_response_ext;
+	msg->reply = version;
+	msg->reply_size = sizeof(*version);
+
+	rc = virtsnd_ctl_msg_send_sync(snd, msg);
+	if (rc) {
+		dev_err(&vdev->dev, "failed to query version: %d, default to version 1\n", rc);
+		return rc;
+	}
+
+	snd->version = *version;
+	return rc;
+}
+
+
 static int virtsnd_build_devs(struct virtio_snd *snd)
 {
 	struct virtio_device *vdev = snd->vdev;
@@ -274,23 +314,14 @@ int vsnd_dma_area_export(struct virtio_pcm_substream *vss,
 	int ret;
 	int32_t hab_socket;
 
-	/* use control queue to export memory since other queues are not used in push-pull mode */
-	if (vss->substream->runtime->no_period_wakeup) {
-		hab_socket =
-			snd->queues[VIRTIO_SND_VQ_CONTROL]
-				.thread_data
-				.hab_socket;
-	}
+	if (vss->substream->runtime->no_period_wakeup)
+		hab_socket = snd->queues[VIRTIO_SND_VQ_CONTROL].thread_data.hab_socket;
 
-	else if (vss->direction == SNDRV_PCM_STREAM_PLAYBACK) {
-		hab_socket =
-			snd->queues[VIRTIO_SND_VQ_RX]
-				.thread_data
-				.hab_socket; // assume it is always RX for dma
-	} else {
-		hab_socket =
-			snd->queues[VIRTIO_SND_VQ_TX].thread_data.hab_socket;
-	}
+	else if (vss->direction == SNDRV_PCM_STREAM_PLAYBACK)
+		hab_socket = snd->queues[VIRTIO_SND_VQ_RX].thread_data.hab_socket;
+
+	else
+		hab_socket = snd->queues[VIRTIO_SND_VQ_TX].thread_data.hab_socket;
 
 	if (vss->export_ready)
 		pr_err("dma area exported already! direction %d vcid %X exp_id %d\n",
@@ -312,27 +343,17 @@ int vsnd_dma_area_export(struct virtio_pcm_substream *vss,
 void vsnd_dma_area_unexport(struct virtio_pcm_substream* vss, uint32_t export_id)
 {
 	struct virtio_snd *snd = vss->snd;
-        int32_t hab_socket;
+	int32_t hab_socket;
 	int ret;
 
-        /* use control queue to export memory since other queues are not used in push-pull mode */
-        if (vss->substream->runtime->no_period_wakeup) {
-                hab_socket =
-                        snd->queues[VIRTIO_SND_VQ_CONTROL]
-                                .thread_data
-                                .hab_socket;
-        }
+	if (vss->substream->runtime->no_period_wakeup)
+		hab_socket = snd->queues[VIRTIO_SND_VQ_CONTROL].thread_data.hab_socket;
 
-        else if (vss->direction == SNDRV_PCM_STREAM_PLAYBACK) {
-                hab_socket =
-                        snd->queues[VIRTIO_SND_VQ_RX]
-                                .thread_data
-                                .hab_socket; // assume it is always RX for dma
-        } else {
-                hab_socket =
-                        snd->queues[VIRTIO_SND_VQ_TX].thread_data.hab_socket;
-        }
+	else if (vss->direction == SNDRV_PCM_STREAM_PLAYBACK)
+		hab_socket = snd->queues[VIRTIO_SND_VQ_RX].thread_data.hab_socket;
 
+	else
+		hab_socket = snd->queues[VIRTIO_SND_VQ_TX].thread_data.hab_socket;
 
 	ret = habmm_unexport(hab_socket, export_id, 0);
 
@@ -464,6 +485,11 @@ static int __init vsnd_init(void)
 	}
 
         pr_info("boot_kpi: M - DRIVER Audio Init\n");
+	rc = vsnd_get_version_info(snd);
+	if (rc) {
+		pr_err("vsnd_get_version_info fail, rc = %d\n", rc);
+		snd->version = VSND_VERSION_1;
+	}
 	rc = virtsnd_build_devs(snd);
         pr_info("boot_kpi: M - DRIVER Audio Ready\n");
 
