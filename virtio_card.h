@@ -98,6 +98,8 @@ struct virtio_snd {
 	/* --- OpenSynergy extensions --------------------------------------- */
 	struct virtio_kctl_ctx *kctl_ctx;
 	struct work_struct kctl_work;
+        /* --- Qualcomm extensions -------------------------------------------*/
+        u32 version;
 };
 
 
