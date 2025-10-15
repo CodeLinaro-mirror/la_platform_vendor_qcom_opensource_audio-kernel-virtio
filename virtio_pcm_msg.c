@@ -85,6 +85,7 @@ int virtsnd_pcm_msg_alloc(struct virtio_pcm_substream *substream,
 
 	if (substream->msgs) {
 		devm_kfree(&vdev->dev, substream->msgs);
+		substream->msgs = NULL;
 	}
 
 	substream->msgs = devm_kcalloc(&vdev->dev, nmsg,
