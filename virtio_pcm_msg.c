@@ -85,6 +85,7 @@ int virtsnd_pcm_msg_alloc(struct virtio_pcm_substream *substream,
 
 	if (substream->msgs) {
 		devm_kfree(&vdev->dev, substream->msgs);
+		substream->msgs = NULL;
 	}
 
 	substream->msgs = devm_kcalloc(&vdev->dev, nmsg,
@@ -264,7 +265,10 @@ virtsnd_pcm_ctl_msg_alloc(struct virtio_pcm_substream *substream,
 
 	switch (command) {
 	case VIRTIO_SND_R_PCM_SET_PARAMS: {
-		request_size = sizeof(struct virtio_snd_pcm_set_params);
+		if (substream->snd->version == VSND_VERSION_2)
+			request_size = sizeof(struct virtio_snd_pcm_set_params_v2);
+		else
+			request_size = sizeof(struct virtio_snd_pcm_set_params);
 		break;
 	}
 	}
