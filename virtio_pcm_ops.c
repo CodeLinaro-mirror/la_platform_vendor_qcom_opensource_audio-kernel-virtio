@@ -117,8 +117,7 @@ static int virtsnd_pcm_release(struct virtio_pcm_substream *substream)
 
 	rc = virtsnd_ctl_msg_send_sync(snd, msg);
 	if (!rc)
-		rc = wait_event_interruptible(substream->msg_empty,
-					      virtsnd_pcm_released(substream));
+		wait_event_interruptible(substream->msg_empty, virtsnd_pcm_released(substream));
 
 	vsnd_dma_area_unexport(substream, substream->export_id);
 
@@ -185,6 +184,7 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 	struct virtio_device *vdev = ss->snd->vdev;
 	struct virtio_snd_msg *msg;
 	struct virtio_snd_pcm_set_params *request;
+	struct virtio_snd_pcm_set_params_v2 *request_v2;
 	snd_pcm_format_t format;
 	struct snd_dma_buffer *dma_buf = &substream->dma_buffer;
 	unsigned int channels;
@@ -197,6 +197,7 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 	int vformat = -1;
 	int vrate = -1;
 	int rc;
+	u32 version = ss->snd->version;
 
 	if (!atomic_read(&ss->suspended)) {
 		/*
@@ -246,12 +247,35 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 	if (vformat == -1 || vrate == -1)
 		return -EINVAL;
 
+	if (!runtime->dma_area) {
+		/* set runtime buffer to prealloced dma buf*/
+		dma_buf->dev.type = SNDRV_DMA_TYPE_DEV;
+		dma_buf->dev.dev = substream->pcm->card->dev;
+		dma_buf->private_data = NULL;
+		dma_buf->area = ss->dma_data[DMA_BUF_DATA].vmap->vaddr;
+		dma_buf->addr = 0;
+		dma_buf->bytes = PAGE_ALIGN(buffer_bytes);
+		snd_pcm_set_runtime_buffer(substream, &substream->dma_buffer);
+
+
+		if (!is_mmap_noirq) {
+			/* Allocate and initialize I/O messages */
+			rc = virtsnd_pcm_msg_alloc(ss, periods, runtime->dma_area,
+						   period_bytes);
+
+			if (rc) {
+		 		snd_pcm_set_runtime_buffer(substream, NULL);
+				return rc;
+			}
+		}
+	}
+
 	msg = virtsnd_pcm_ctl_msg_alloc(ss, VIRTIO_SND_R_PCM_SET_PARAMS,
 					GFP_KERNEL);
 	if (IS_ERR(msg))
 		return PTR_ERR(msg);
 
-	request = sg_virt(&msg->sg_request);
+	request = (struct virtio_snd_pcm_set_params*)sg_virt(&msg->sg_request);
 
 	request->buffer_bytes = cpu_to_virtio32(vdev, buffer_bytes);
 	request->period_bytes = cpu_to_virtio32(vdev, period_bytes);
@@ -263,45 +287,26 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 	if (ss->features & (1U << VIRTIO_SND_PCM_F_MSG_POLLING))
 		request->features |=
 			cpu_to_virtio32(vdev,
-					1U << VIRTIO_SND_PCM_F_MSG_POLLING);
+				1U << VIRTIO_SND_PCM_F_MSG_POLLING);
 
 	if (ss->features & (1U << VIRTIO_SND_PCM_F_EVT_XRUNS))
 		request->features |=
 			cpu_to_virtio32(vdev,
-					1U << VIRTIO_SND_PCM_F_EVT_XRUNS);
+				1U << VIRTIO_SND_PCM_F_EVT_XRUNS);
 
 	if (ss->features & (1U << VIRTIO_SND_PCM_F_HOSTLESS))
 		request->features |=
 			cpu_to_virtio32(vdev,
-					1U << VIRTIO_SND_PCM_F_HOSTLESS);
+				1U << VIRTIO_SND_PCM_F_HOSTLESS);
 
-	rc = virtsnd_ctl_msg_send_sync(ss->snd, msg);
-	if (rc)
-		return rc;
+	if (version == VSND_VERSION_2) {
+		request_v2 = (struct virtio_snd_pcm_set_params_v2*)sg_virt(&msg->sg_request);
+		request_v2->export_id = ss->export_id;
+		request_v2->dma_bytes = dma_buf->bytes;
 
-	/* If the buffer was already allocated earlier, do nothing. */
-	if (runtime->dma_area)
-		return 0;
-
-	/* set runtime buffer to prealloced dma buf*/
-	dma_buf->dev.type = SNDRV_DMA_TYPE_DEV;
-	dma_buf->dev.dev = substream->pcm->card->dev;
-	dma_buf->private_data = NULL;
-	dma_buf->area = ss->dma_data[DMA_BUF_DATA].vmap->vaddr;
-	dma_buf->addr = 0;
-	dma_buf->bytes = PAGE_ALIGN(buffer_bytes);
-	snd_pcm_set_runtime_buffer(substream, &substream->dma_buffer);
-
-
-	if (!is_mmap_noirq) {
-	/* Allocate and initialize I/O messages */
-	rc = virtsnd_pcm_msg_alloc(ss, periods, runtime->dma_area,
-				   period_bytes);
-	 if (rc)
-	 	snd_pcm_set_runtime_buffer(substream, NULL);
 	}
 
-	return rc;
+	return virtsnd_ctl_msg_send_sync(ss->snd, msg);
 }
 
 static int virtsnd_pcm_hw_free(struct snd_pcm_substream *substream)
@@ -381,8 +386,7 @@ static int virtsnd_pcm_trigger(struct snd_pcm_substream *substream, int command)
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
 	case SNDRV_PCM_TRIGGER_RESUME: {
-		int rc;
-
+		int rc = 0;
 		pr_info("kpi : SNDRV_PCM_TRIGGER_START: enter\n");
 		if (!(ss->features & (1U << VIRTIO_SND_PCM_F_HOSTLESS)) &&
 		    !(substream->runtime->no_period_wakeup)) {
