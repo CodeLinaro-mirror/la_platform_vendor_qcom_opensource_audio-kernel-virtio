@@ -169,8 +169,8 @@ int virtsnd_pcm_msg_send(struct virtio_pcm_substream *substream)
 		rc = habmm_socket_send(hab_socket, msg, sizeof(*msg), HABMM_SOCKET_SEND_FLAGS_NON_BLOCKING);
 		if (rc) {
 			dev_err(&vdev->dev,
-				"SID %u: failed to send I/O message vcid %X ret %d msgsz %zd\n",
-				substream->sid, hab_socket, rc, sizeof(*msg));
+				"SID %u: failed to send I/O message vcid %X ret %d msgsz %zd with rc[%d]\n",
+				substream->sid, hab_socket, rc, sizeof(*msg), rc);
 			if ((rc == -EAGAIN) && (retry_times < MAX_SEND_PACKET_RETRY)) {
 				retry_times++;
 				dev_err(&vdev->dev, "send packet retry %d", retry_times);
@@ -193,10 +193,13 @@ static void virtsnd_pcm_msg_complete(struct virtio_pcm_msg *msg, size_t size)
 
 	/* TODO: propagate an error to upper layer? */
 	if (le32_to_cpu(msg->status.status) != VIRTIO_SND_S_OK)
+	{
+		pr_err("virtsnd_pcm_msg_complete: get error response\n");
 		return;
+	}
 
 	if (!atomic_read(&substream->first_frame_done)) {
-		pr_info("kpi : virtsnd_pcm_msg_complete first_frame_done\n");
+		pr_info("kpi : virtsnd_pcm_msg_complete first_frame_done for stream_id[%d]\n", msg->sid);
 		atomic_set(&substream->first_frame_done, 1);
 	}
 
@@ -209,8 +212,10 @@ static void virtsnd_pcm_msg_complete(struct virtio_pcm_msg *msg, size_t size)
 			size -= sizeof(struct virtio_snd_pcm_status);
 		else
 			/* TODO: propagate an error to upper layer? */
-			return;
-
+			{
+				pr_err("virtsnd_pcm_msg_complete: not enough size[%zu]\n", size);
+				return;
+			}
 		hw_ptr += bytes_to_frames(runtime, size);
 	}
 
