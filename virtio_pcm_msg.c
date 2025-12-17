@@ -169,8 +169,8 @@ int virtsnd_pcm_msg_send(struct virtio_pcm_substream *substream)
 		rc = habmm_socket_send(hab_socket, msg, sizeof(*msg), HABMM_SOCKET_SEND_FLAGS_NON_BLOCKING);
 		if (rc) {
 			dev_err(&vdev->dev,
-				"SID %u: failed to send I/O message vcid %X ret %d msgsz %zd with rc[%d]\n",
-				substream->sid, hab_socket, rc, sizeof(*msg), rc);
+				"SID %u: failed to send I/O message vcid %X ret %d msgsz %zd]\n",
+				substream->sid, hab_socket, rc, sizeof(*msg));
 			if ((rc == -EAGAIN) && (retry_times < MAX_SEND_PACKET_RETRY)) {
 				retry_times++;
 				dev_err(&vdev->dev, "send packet retry %d", retry_times);
@@ -199,7 +199,7 @@ static void virtsnd_pcm_msg_complete(struct virtio_pcm_msg *msg, size_t size)
 	}
 
 	if (!atomic_read(&substream->first_frame_done)) {
-		pr_info("kpi : virtsnd_pcm_msg_complete first_frame_done for stream_id[%d]\n", msg->sid);
+		pr_info("kpi : virtsnd_pcm_msg_complete first_frame_done for stream_id[%d]\n", substream->sid);
 		atomic_set(&substream->first_frame_done, 1);
 	}
 

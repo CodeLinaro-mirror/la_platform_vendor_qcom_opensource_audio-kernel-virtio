@@ -20,6 +20,7 @@
 
 #include "virtio_card.h"
 #define MAX_VARIANT_NAME 16
+#define WAIT_AVAIL_TIME_MS 500
 
 static char *audio_variant = "audioreach";
 module_param(audio_variant, charp, 0644);
@@ -339,13 +340,17 @@ static int virtsnd_pcm_prepare(struct snd_pcm_substream *substream)
 	struct virtio_snd_msg *msg;
 	unsigned long flags;
 	int rc = 0;
-	unsigned int wait_time_ms = 500;
+	unsigned int wait_time_ms = 0;
 	pr_debug("virtsnd_pcm_prepare: for stream_id[%d] enter\n", ss->sid);
 	substream->runtime->stop_threshold = substream->runtime->boundary;
 
 	//set wait time = 2 * period_time + fixed wait time
 	if((runtime->rate) > 0 && (runtime->channels > 0)){
-		wait_time_ms += (runtime->period_size * 2000) / (runtime->rate * runtime->channels);
+		wait_time_ms = WAIT_AVAIL_TIME_MS +
+			(runtime->period_size * 2000) / (runtime->rate * runtime->channels);
+	} else {
+		pr_warn("Invalid runtime parameters for wait time, using default for stream_id[%d].\n", ss->sid);
+		wait_time_ms = WAIT_AVAIL_TIME_MS;
 	}
 	substream->wait_time = wait_time_ms;
 	pr_debug("virtsnd_pcm_prepare: wait_time_ms[%u] = 2*period_size[%lu]/(rate[%u]*channels[%u]) for stream_id[%d]\n",
