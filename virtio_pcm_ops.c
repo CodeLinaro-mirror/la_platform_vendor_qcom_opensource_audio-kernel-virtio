@@ -118,7 +118,10 @@ static int virtsnd_pcm_release(struct virtio_pcm_substream *substream)
 	rc = virtsnd_ctl_msg_send_sync(snd, msg);
 	if (!rc)
 		wait_event_interruptible(substream->msg_empty, virtsnd_pcm_released(substream));
-
+	else{
+		pr_err("Stream already closed, reset msg_count\n");
+		atomic_set(&substream->msg_count, 0);
+    }
 	vsnd_dma_area_unexport(substream, substream->export_id);
 	pr_debug("virtsnd_pcm_release: for stream_id[%d] exit with rc[%d]\n", substream->sid, rc);
 	return rc;
