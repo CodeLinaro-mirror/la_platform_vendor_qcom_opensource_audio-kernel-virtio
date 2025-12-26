@@ -358,7 +358,7 @@ void vsnd_dma_area_unexport(struct virtio_pcm_substream* vss, uint32_t export_id
 	ret = habmm_unexport(hab_socket, export_id, 0);
 
 	if (ret)
-		dev_err(&snd->vdev->dev, "%s: habmm_unexport failed: %d", __func__, ret);
+		dev_err(&snd->vdev->dev, "%s: habmm_unexport failed: %d for stream_id[%d]", __func__, ret, vss->sid);
 
 	vss->export_ready = 0;
 }
