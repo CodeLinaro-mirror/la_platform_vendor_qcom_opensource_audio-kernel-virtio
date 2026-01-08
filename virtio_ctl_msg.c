@@ -101,7 +101,7 @@ retry_send_packet:
 			queue->thread_data.mmid, queue->thread_data.hab_socket, msg->request_size,rc);
 		if ((rc == -EAGAIN) && (retry_times < MAX_SEND_PACKET_RETRY)) {
 			retry_times++;
-			pr_err("send ctl msg retry %d", retry_times);
+			pr_err("send ctl msg retry %d\n", retry_times);
 			goto retry_send_packet;
 		}
 	}
@@ -142,9 +142,9 @@ int virtsnd_ctl_msg_send_sync(struct virtio_snd *snd,
 
 	code = wait_for_completion_interruptible_timeout(&msg->notify, js);
 	if (code <= 0) {
-		dev_err(&vdev->dev, "wait_for_completion_interruptible_timeout return [%d]", code);
+		dev_err(&vdev->dev, "wait_for_completion_interruptible_timeout return [%d]\n", code);
 		if (!code) {
-			dev_err(&vdev->dev, "control message [0x%x] timeout", request->code);
+			dev_err(&vdev->dev, "control message [0x%x] timeout\n", request->code);
 			code = -EIO;
 		}
 		spin_lock_irqsave(&queue->lock, flags);
