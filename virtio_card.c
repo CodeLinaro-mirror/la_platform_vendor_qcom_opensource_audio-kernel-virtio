@@ -269,9 +269,39 @@ static int vsnd_kthread(void *d)
 					0); // request + response + payload
 		if (ret) {
 			pr_err("%s mmid %d failed %d size %d\n", __func__,
-			       p->mmid, ret, sz);
-			if (ret == -ENODEV)
-				break;
+					p->mmid, ret, sz);
+			if (ret == -ENODEV){
+				/* Unable to establish connection with BE driver.
+				 * Retry until able to re-establish HAB connection.
+				 */
+				if (p->mmid == MM_AUD_2){
+					snd_card_notify_user(SND_CARD_STATUS_OFFLINE);
+					pr_err("%s Mark snd card offline.\n", __func__);
+				}
+				pr_err("%s mmid %d retry hab connection.\n", __func__, p->mmid);
+
+				while(!p->stop){
+					ret = habmm_socket_open(&p->hab_socket, p->mmid, HAB_OPEN_TIMEOUT_MS, 0);
+					pr_info("%s mmid %d open return %d\n", __func__, p->mmid, ret);
+					if (ret) {
+						pr_err("hab open failed mmid %d ret %d\n", p->mmid, ret);
+						set_current_state(TASK_INTERRUPTIBLE);
+						schedule_timeout(msecs_to_jiffies(20));
+						continue;
+					}
+					pr_info("hab socket open mmid %d OK %X\n", p->mmid,
+							p->hab_socket);
+					break;
+				}
+				if (!p->stop && p->mmid == MM_AUD_2){
+                    /* We can mark snd card online once one of the hab connection
+                     * recovers, the others recover same time within ns.
+                     */
+					pr_err("%s Mark snd card online.\n", __func__);
+					snd_card_notify_user(SND_CARD_STATUS_ONLINE);
+				}
+				continue;
+			}
 		} else {
 			pr_debug("%s mmid %d ok size %d\n",
 				__func__, p->mmid, sz);
@@ -358,7 +388,7 @@ void vsnd_dma_area_unexport(struct virtio_pcm_substream* vss, uint32_t export_id
 	ret = habmm_unexport(hab_socket, export_id, 0);
 
 	if (ret)
-		dev_err(&snd->vdev->dev, "%s: habmm_unexport failed: %d", __func__, ret);
+		dev_err(&snd->vdev->dev, "%s: habmm_unexport failed: %d for stream_id[%d]", __func__, ret, vss->sid);
 
 	vss->export_ready = 0;
 }

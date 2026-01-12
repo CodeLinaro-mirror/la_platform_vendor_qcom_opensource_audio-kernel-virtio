@@ -23,6 +23,7 @@
  */
 #include <linux/moduleparam.h>
 #include <linux/virtio_config.h>
+#include <linux/dma-resv.h>
 
 #include "virtio_card.h"
 
@@ -229,8 +230,8 @@ static int virtsnd_pcm_build_hw(struct virtio_pcm_substream *substream,
 // 	struct device *data = NULL;
 
 // 	snd_pcm_lib_preallocate_pages(ksubstream,
-// 					     SNDRV_DMA_TYPE_CONTINUOUS, data,
-// 					     size, size);
+// 								  SNDRV_DMA_TYPE_CONTINUOUS, data,
+// 								  size, size);
 // }
 
 int virtsnd_alloc_dmabuf(struct virtio_pcm_substream *substream, size_t size, enum dma_buf_index index)
@@ -246,7 +247,7 @@ int virtsnd_alloc_dmabuf(struct virtio_pcm_substream *substream, size_t size, en
 	}
 #ifdef __DMA_BUF_MAP_H__ // kernel 5.15
 	substream->dma_data[index].vmap = kzalloc(sizeof(struct dma_buf_map), GFP_KERNEL);
-#else                    // kernel 6.1
+#else					 // kernel 6.1
 	substream->dma_data[index].vmap = kzalloc(sizeof(struct iosys_map), GFP_KERNEL);
 #endif
 	if (!substream->dma_data[index].vmap) {
@@ -259,12 +260,19 @@ int virtsnd_alloc_dmabuf(struct virtio_pcm_substream *substream, size_t size, en
 		goto err;
 
 	substream->dma_data[index].dma_buf = dma_heap_buffer_alloc(heap, alloc_size, 0, 0);
-	if (IS_ERR_OR_NULL((void*)substream->dma_data[index].dma_buf)) {
+	if (IS_ERR_OR_NULL((void *)substream->dma_data[index].dma_buf)) {
 		rc = -ENOMEM;
 		goto err;
 	}
 
+	if (!substream->dma_data[index].dma_buf->resv) {
+		rc = -EINVAL;
+		goto put_dma_buf;
+	}
+
+	dma_resv_lock(substream->dma_data[index].dma_buf->resv, NULL);
 	rc = dma_buf_vmap(substream->dma_data[index].dma_buf, substream->dma_data[index].vmap);
+	dma_resv_unlock(substream->dma_data[index].dma_buf->resv);
 	if (rc)
 		goto put_dma_buf;
 
@@ -272,10 +280,14 @@ int virtsnd_alloc_dmabuf(struct virtio_pcm_substream *substream, size_t size, en
 
 put_dma_buf:
 	dma_buf_put(substream->dma_data[index].dma_buf);
+	substream->dma_data[index].dma_buf = NULL;
 
  err:
-	if (substream->dma_data[index].vmap)
+	if (substream->dma_data[index].vmap) {
 		kfree(substream->dma_data[index].vmap);
+		substream->dma_data[index].vmap = NULL;
+	}
+
 	return rc;
 }
 
