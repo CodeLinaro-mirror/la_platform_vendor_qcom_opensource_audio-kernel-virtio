@@ -373,11 +373,14 @@ static int virtsnd_pcm_prepare(struct snd_pcm_substream *substream)
 		}
 
 		spin_lock_irqsave(&queue->lock, flags);
-		ss->msg_last_enqueued = -1;
 		spin_unlock_irqrestore(&queue->lock, flags);
 
 		atomic_set(&ss->hw_ptr, 0);
 	}
+	memset(&ss->pcm_indirect, 0, sizeof(ss->pcm_indirect));
+        ss->pcm_indirect.sw_buffer_size =
+        	ss->pcm_indirect.hw_buffer_size =
+        		snd_pcm_lib_buffer_bytes(substream);
 
 	atomic_set(&ss->xfer_xrun, 0);
 	atomic_set(&ss->msg_count, 0);
@@ -398,7 +401,6 @@ static int virtsnd_pcm_trigger(struct snd_pcm_substream *substream, int command)
 {
 	struct virtio_pcm_substream *ss = snd_pcm_substream_chip(substream);
 	struct virtio_snd *snd = ss->snd;
-	struct virtio_snd_queue *queue = virtsnd_pcm_queue(ss);
 	struct virtio_snd_msg *msg;
 	int rc = 0;
 
@@ -410,9 +412,9 @@ static int virtsnd_pcm_trigger(struct snd_pcm_substream *substream, int command)
 		pr_debug("virtsnd_pcm_msg_send: first frame stream_id[%d] enter\n", ss->sid);
 		if (!(ss->features & (1U << VIRTIO_SND_PCM_F_HOSTLESS)) &&
 		    !(substream->runtime->no_period_wakeup)) {
-			spin_lock(&queue->lock);
-			rc = virtsnd_pcm_msg_send(ss);
-			spin_unlock(&queue->lock);
+			/* remove spin lock here to since alsa core already have stream lock*/
+			if (ss->direction == SNDRV_PCM_STREAM_CAPTURE)
+				rc = virtsnd_pcm_msg_send(ss, 0, ss->pcm_indirect.hw_buffer_size);
 			if (rc)
 				return rc;
 		}
@@ -589,14 +591,95 @@ virtsnd_pcm_pointer(struct snd_pcm_substream *substream)
 	return (snd_pcm_uframes_t)atomic_read(&ss->hw_ptr);
 }
 
-const struct snd_pcm_ops virtsnd_pcm_ops = {
-	.open = virtsnd_pcm_open,
-	.close = virtsnd_pcm_close,
-	.ioctl = snd_pcm_lib_ioctl,
-	.hw_params = virtsnd_pcm_hw_params,
-	.hw_free = virtsnd_pcm_hw_free,
-	.prepare = virtsnd_pcm_prepare,
-	.trigger = virtsnd_pcm_trigger,
-	.pointer = virtsnd_pcm_pointer,
-	.mmap = virtsnd_pcm_mmap,
+static void virtsnd_pcm_trans_copy(struct snd_pcm_substream *substream,
+				   struct snd_pcm_indirect *rec, size_t bytes)
+{
+	struct virtio_pcm_substream *vss = snd_pcm_substream_chip(substream);
+	virtsnd_pcm_msg_send(vss, rec->sw_data, bytes);
+}
+
+static snd_pcm_uframes_t virtsnd_pcm_pb_pointer(struct snd_pcm_substream *substream)
+{
+	struct virtio_pcm_substream *ss = snd_pcm_substream_chip(substream);
+
+	if (substream->runtime->no_period_wakeup)
+		return virtsnd_pcm_pointer(substream);
+
+	if (atomic_read(&ss->xfer_xrun))
+		return SNDRV_PCM_POS_XRUN;
+
+	return snd_pcm_indirect_playback_pointer(substream, &ss->pcm_indirect,
+			(snd_pcm_uframes_t)atomic_read(&ss->hw_ptr));
+}
+
+static snd_pcm_uframes_t virtsnd_pcm_cp_pointer(struct snd_pcm_substream *substream)
+{
+	struct virtio_pcm_substream *ss = snd_pcm_substream_chip(substream);
+
+	if (substream->runtime->no_period_wakeup)
+		return virtsnd_pcm_pointer(substream);
+
+	if (atomic_read(&ss->xfer_xrun))
+		return SNDRV_PCM_POS_XRUN;
+
+	return snd_pcm_indirect_capture_pointer(substream, &ss->pcm_indirect,
+			(snd_pcm_uframes_t)atomic_read(&ss->hw_ptr));
+}
+
+static int virtsnd_pcm_pb_ack(struct snd_pcm_substream *substream)
+{
+	struct virtio_pcm_substream *ss = snd_pcm_substream_chip(substream);
+	int rc;
+
+	if (substream->runtime->no_period_wakeup)
+		return 0;
+
+	/* remove spin lock here to since alsa core already have stream lock*/
+	rc = snd_pcm_indirect_playback_transfer(substream, &ss->pcm_indirect,
+						virtsnd_pcm_trans_copy);
+
+	return rc;
+}
+
+static int virtsnd_pcm_cp_ack(struct snd_pcm_substream *substream)
+{
+	struct virtio_pcm_substream *ss = snd_pcm_substream_chip(substream);
+	int rc;
+
+	if (substream->runtime->no_period_wakeup)
+		return 0;
+	/* remove spin lock here to since alsa core already have stream lock*/
+	rc = snd_pcm_indirect_capture_transfer(substream, &ss->pcm_indirect,
+					       virtsnd_pcm_trans_copy);
+
+	return rc;
+}
+
+const struct snd_pcm_ops virtsnd_pcm_ops[] = {
+	{
+		// Playback Ops
+		.open = virtsnd_pcm_open,
+		.close = virtsnd_pcm_close,
+		.ioctl = snd_pcm_lib_ioctl,
+		.hw_params = virtsnd_pcm_hw_params,
+		.hw_free = virtsnd_pcm_hw_free,
+		.prepare = virtsnd_pcm_prepare,
+		.trigger = virtsnd_pcm_trigger,
+		.pointer = virtsnd_pcm_pb_pointer,
+		.ack = virtsnd_pcm_pb_ack,
+		.mmap = virtsnd_pcm_mmap,
+	},
+	{
+		// Capture Ops
+		.open = virtsnd_pcm_open,
+		.close = virtsnd_pcm_close,
+		.ioctl = snd_pcm_lib_ioctl,
+		.hw_params = virtsnd_pcm_hw_params,
+		.hw_free = virtsnd_pcm_hw_free,
+		.prepare = virtsnd_pcm_prepare,
+		.trigger = virtsnd_pcm_trigger,
+		.pointer = virtsnd_pcm_cp_pointer,
+		.ack = virtsnd_pcm_cp_ack,
+		.mmap = virtsnd_pcm_mmap,
+	}
 };
