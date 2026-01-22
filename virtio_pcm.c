@@ -661,7 +661,7 @@ int virtsnd_pcm_build_devs(struct virtio_snd *snd)
 				}
 			}
 
-			snd_pcm_set_ops(pcm->pcm, i, &virtsnd_pcm_ops);
+			snd_pcm_set_ops(pcm->pcm, i, &virtsnd_pcm_ops[i]);
 		}
 
 	return 0;
