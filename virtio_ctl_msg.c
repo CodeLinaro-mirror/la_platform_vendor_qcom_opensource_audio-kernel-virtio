@@ -97,10 +97,11 @@ retry_send_packet:
 	if (!rc) {
 		list_add_tail(&msg->list, &snd->ctl_msgs);
 	} else {
-		pr_err("hab send failed mmid %d socket %X sz %zu\n", queue->thread_data.mmid, queue->thread_data.hab_socket, msg->request_size);
+		pr_err("hab send failed mmid %d socket %X sz %zu with rc[%d]\n",
+			queue->thread_data.mmid, queue->thread_data.hab_socket, msg->request_size,rc);
 		if ((rc == -EAGAIN) && (retry_times < MAX_SEND_PACKET_RETRY)) {
 			retry_times++;
-			pr_err("send ctl msg retry %d", retry_times);
+			pr_err("send ctl msg retry %d\n", retry_times);
 			goto retry_send_packet;
 		}
 	}
@@ -115,7 +116,7 @@ retry_send_packet:
 
 on_failure:
 	virtsnd_ctl_msg_unref(snd->vdev, msg);
-
+	pr_err("virtsnd_ctl_msg_send: return EIO[%d]\n", EIO);
 	return -EIO;
 }
 
@@ -141,8 +142,9 @@ int virtsnd_ctl_msg_send_sync(struct virtio_snd *snd,
 
 	code = wait_for_completion_interruptible_timeout(&msg->notify, js);
 	if (code <= 0) {
+		dev_err(&vdev->dev, "wait_for_completion_interruptible_timeout return [%d]\n", code);
 		if (!code) {
-			dev_err(&vdev->dev, "control message timeout");
+			dev_err(&vdev->dev, "control message [0x%x] timeout\n", request->code);
 			code = -EIO;
 		}
 		spin_lock_irqsave(&queue->lock, flags);
@@ -179,7 +181,10 @@ int virtsnd_ctl_msg_send_sync(struct virtio_snd *snd,
 
 on_failure:
 	virtsnd_ctl_msg_unref(vdev, msg);
-
+	if(code != 0)
+	{
+		pr_err("virtsnd_ctl_msg_send_sync: error [%d]\n", code);
+	}
 	return code;
 }
 
@@ -247,31 +252,34 @@ void virtsnd_ctl_notify_cb(struct virtqueue *vqueue)
 void process_ctl_msg(struct virtio_snd *snd, void *buff) {
 	struct virtio_snd_msg *msg = NULL;
 	struct virtio_snd_queue *queue = virtsnd_control_queue(snd);
+	struct virtio_snd_hdr *rr = (struct virtio_snd_hdr *)buff;
 	unsigned long flags;
 	int found = 0;
+	int command = rr->code;
+	int list_len = 0;
 
 	spin_lock_irqsave(&queue->lock, flags);
 	list_for_each_entry(msg, &snd->ctl_msgs, list) {
 		struct virtio_snd_hdr *request = sg_virt(&msg->sg_request);
 		struct virtio_snd_hdr *response = sg_virt(&msg->sg_response);
-		struct virtio_snd_hdr *rr = (struct virtio_snd_hdr *)buff;
-		if (request->code  == rr->code) {
+		list_len++;
+		if (request->code  == command) {
 			found = 1;
-
 			memcpy(response, (unsigned char *)buff + msg->request_size + msg->request_ext_size, msg->response_size);
 			if (msg->reply)
 				memcpy(msg->reply, (unsigned char *)buff + msg->request_size + msg->request_ext_size + msg->response_size, msg->reply_size);
-
+			list_del(&msg->list);
 			break;
 		}
 	}
 	spin_unlock_irqrestore(&queue->lock, flags);
 
 	if (found) {
-		list_del(&msg->list);
 		complete(&msg->notify);
 
 		virtsnd_ctl_msg_unref(snd->vdev, msg);
+	} else {
+		pr_err("control message [0x%x] was not found, list_len[%d]\n", command, list_len);
 	}
 }
 

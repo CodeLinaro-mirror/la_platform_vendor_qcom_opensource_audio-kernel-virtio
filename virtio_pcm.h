@@ -29,6 +29,7 @@
 #include <linux/atomic.h>
 #include <linux/virtio_config.h>
 #include <sound/pcm.h>
+#include <sound/pcm-indirect.h>
 #include <linux/dma-mapping.h>
 #include <linux/dma-buf.h>
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
@@ -77,6 +78,7 @@ struct dma_buf_data {
  * @xfer_xrun: Data underflow/overflow state.
  * @msg_list: Pending I/O message list.
  * @msg_empty: Notify when msg_list is empty.
+ * @pcm_indirect: Kernel indirect pcm structure.
  */
 struct virtio_pcm_substream {
 	struct virtio_snd *snd;
@@ -91,7 +93,7 @@ struct virtio_pcm_substream {
 	atomic_t xfer_xrun;
 	atomic_t suspended;
 	struct virtio_pcm_msg *msgs;
-	int msg_last_enqueued;
+	struct snd_pcm_indirect pcm_indirect;
 	atomic_t msg_count;
 	wait_queue_head_t msg_empty;
 
@@ -180,7 +182,7 @@ struct virtio_pcm {
 	struct virtio_pcm_stream streams[SNDRV_PCM_STREAM_LAST + 1];
 };
 
-extern const struct snd_pcm_ops virtsnd_pcm_ops;
+extern const struct snd_pcm_ops virtsnd_pcm_ops[];
 
 int virtsnd_pcm_validate(struct virtio_device *vdev);
 
@@ -213,7 +215,7 @@ int virtsnd_pcm_msg_alloc(struct virtio_pcm_substream *substream,
 			  unsigned int nmsg, u8 *dma_area,
 			  unsigned int period_bytes);
 
-int virtsnd_pcm_msg_send(struct virtio_pcm_substream *substream);
+int virtsnd_pcm_msg_send(struct virtio_pcm_substream *substream, unsigned long offset, unsigned long bytes);
 
 int vsnd_dma_area_export(struct virtio_pcm_substream *vss,
 			 struct dma_buf *dma_area, size_t dma_bytes,

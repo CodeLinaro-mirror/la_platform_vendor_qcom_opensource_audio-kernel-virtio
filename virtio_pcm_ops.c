@@ -20,6 +20,7 @@
 
 #include "virtio_card.h"
 #define MAX_VARIANT_NAME 16
+#define WAIT_AVAIL_TIME_MS 500
 
 static char *audio_variant = "audioreach";
 module_param(audio_variant, charp, 0644);
@@ -109,7 +110,7 @@ static int virtsnd_pcm_release(struct virtio_pcm_substream *substream)
 	struct virtio_snd *snd = substream->snd;
 	struct virtio_snd_msg *msg;
 	int rc;
-
+	pr_debug("virtsnd_pcm_release: for stream_id[%d] enter\n", substream->sid);
 	msg = virtsnd_pcm_ctl_msg_alloc(substream, VIRTIO_SND_R_PCM_RELEASE,
 					GFP_KERNEL);
 	if (IS_ERR(msg))
@@ -118,9 +119,12 @@ static int virtsnd_pcm_release(struct virtio_pcm_substream *substream)
 	rc = virtsnd_ctl_msg_send_sync(snd, msg);
 	if (!rc)
 		wait_event_interruptible(substream->msg_empty, virtsnd_pcm_released(substream));
-
+	else{
+		pr_err("Stream already closed, reset msg_count\n");
+		atomic_set(&substream->msg_count, 0);
+    }
 	vsnd_dma_area_unexport(substream, substream->export_id);
-
+	pr_debug("virtsnd_pcm_release: for stream_id[%d] exit with rc[%d]\n", substream->sid, rc);
 	return rc;
 }
 
@@ -137,15 +141,13 @@ static int virtsnd_pcm_open(struct snd_pcm_substream *substream)
 			case SNDRV_PCM_STREAM_CAPTURE: {
 				struct virtio_pcm_stream *stream =
 					&pcm->streams[substream->stream];
-
 				if (substream->number < stream->nsubstreams)
 					ss = stream->substreams[substream->number];
-
+				pr_debug("virtsnd_pcm_open: for stream_id[%d]\n", ss->sid);
 				snd_pcm_hw_constraint_step(substream->runtime, 0,
 					SNDRV_PCM_HW_PARAM_PERIOD_BYTES, 64);
 				snd_pcm_hw_constraint_step(substream->runtime, 0,
 					SNDRV_PCM_HW_PARAM_BUFFER_BYTES, 64);
-
 				atomic_set(&ss->suspended, 0);
 
 				if (stream->substreams[substream->number]->hw.rates & SNDRV_PCM_RATE_KNOT) {
@@ -198,7 +200,7 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 	int vrate = -1;
 	int rc;
 	u32 version = ss->snd->version;
-
+	pr_debug("virtsnd_pcm_hw_params: for stream_id[%d] enter\n", ss->sid);
 	if (!atomic_read(&ss->suspended)) {
 		/*
 		 * If we got here after ops->trigger() was called, the queue may
@@ -306,14 +308,16 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 
 	}
 
-	return virtsnd_ctl_msg_send_sync(ss->snd, msg);
+	rc = virtsnd_ctl_msg_send_sync(ss->snd, msg);
+	pr_debug("virtsnd_pcm_hw_params: for stream_id[%d] exit with rc [%d]\n", ss->sid, rc);
+	return rc;
 }
 
 static int virtsnd_pcm_hw_free(struct snd_pcm_substream *substream)
 {
 	struct virtio_pcm_substream *ss = snd_pcm_substream_chip(substream);
 	int rc;
-
+	pr_debug("virtsnd_pcm_hw_free: for stream_id[%d] enter\n", ss->sid);
 	rc = virtsnd_pcm_release(ss);
 
 	/*
@@ -327,19 +331,33 @@ static int virtsnd_pcm_hw_free(struct snd_pcm_substream *substream)
 
 	if (atomic_read(&substream->mmap_count))
 		atomic_set(&substream->mmap_count, 0);
-
+	pr_debug("virtsnd_pcm_hw_free: for stream_id[%d] exit\n", ss->sid);
 	return rc;
 }
 
 static int virtsnd_pcm_prepare(struct snd_pcm_substream *substream)
 {
 	struct virtio_pcm_substream *ss = snd_pcm_substream_chip(substream);
+	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct virtio_device *vdev = ss->snd->vdev;
 	struct virtio_snd_msg *msg;
 	unsigned long flags;
 	int rc = 0;
-
+	unsigned int wait_time_ms = 0;
+	pr_debug("virtsnd_pcm_prepare: for stream_id[%d] enter\n", ss->sid);
 	substream->runtime->stop_threshold = substream->runtime->boundary;
+
+	//set wait time = 2 * period_time + fixed wait time
+	if((runtime->rate) > 0 && (runtime->channels > 0)){
+		wait_time_ms = WAIT_AVAIL_TIME_MS +
+			(runtime->period_size * 2000) / (runtime->rate * runtime->channels);
+	} else {
+		pr_warn("Invalid runtime parameters for wait time, using default for stream_id[%d].\n", ss->sid);
+		wait_time_ms = WAIT_AVAIL_TIME_MS;
+	}
+	substream->wait_time = wait_time_ms;
+	pr_debug("virtsnd_pcm_prepare: wait_time_ms[%u] = 2*period_size[%lu]/(rate[%u]*channels[%u]) for stream_id[%d]\n",
+		wait_time_ms, runtime->period_size, runtime->rate, runtime->channels, ss->sid);
 
 	if (!atomic_read(&ss->suspended)) {
 		struct virtio_snd_queue *queue = virtsnd_pcm_queue(ss);
@@ -355,11 +373,14 @@ static int virtsnd_pcm_prepare(struct snd_pcm_substream *substream)
 		}
 
 		spin_lock_irqsave(&queue->lock, flags);
-		ss->msg_last_enqueued = -1;
 		spin_unlock_irqrestore(&queue->lock, flags);
 
 		atomic_set(&ss->hw_ptr, 0);
 	}
+	memset(&ss->pcm_indirect, 0, sizeof(ss->pcm_indirect));
+        ss->pcm_indirect.sw_buffer_size =
+        	ss->pcm_indirect.hw_buffer_size =
+        		snd_pcm_lib_buffer_bytes(substream);
 
 	atomic_set(&ss->xfer_xrun, 0);
 	atomic_set(&ss->msg_count, 0);
@@ -371,6 +392,7 @@ static int virtsnd_pcm_prepare(struct snd_pcm_substream *substream)
 		return PTR_ERR(msg);
 
 	rc = virtsnd_ctl_msg_send_sync(ss->snd, msg);
+	pr_debug("virtsnd_pcm_prepare: for stream_id[%d] exit with rc [%d]\n", ss->sid, rc);
 	dev_info(&vdev->dev, "kpi : virtsnd_pcm_prepare: exit\n");
 	return rc;
 }
@@ -379,39 +401,41 @@ static int virtsnd_pcm_trigger(struct snd_pcm_substream *substream, int command)
 {
 	struct virtio_pcm_substream *ss = snd_pcm_substream_chip(substream);
 	struct virtio_snd *snd = ss->snd;
-	struct virtio_snd_queue *queue = virtsnd_pcm_queue(ss);
 	struct virtio_snd_msg *msg;
+	int rc = 0;
 
 	switch (command) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
 	case SNDRV_PCM_TRIGGER_RESUME: {
-		int rc = 0;
 		pr_info("kpi : SNDRV_PCM_TRIGGER_START: enter\n");
+		pr_debug("virtsnd_pcm_msg_send: first frame stream_id[%d] enter\n", ss->sid);
 		if (!(ss->features & (1U << VIRTIO_SND_PCM_F_HOSTLESS)) &&
 		    !(substream->runtime->no_period_wakeup)) {
-			spin_lock(&queue->lock);
-			rc = virtsnd_pcm_msg_send(ss);
-			spin_unlock(&queue->lock);
+			/* remove spin lock here to since alsa core already have stream lock*/
+			if (ss->direction == SNDRV_PCM_STREAM_CAPTURE)
+				rc = virtsnd_pcm_msg_send(ss, 0, ss->pcm_indirect.hw_buffer_size);
 			if (rc)
 				return rc;
 		}
 
 		atomic_set(&ss->xfer_enabled, 1);
 		atomic_set(&ss->first_frame_done, 0);
-
+		pr_info("virtsnd_pcm_trigger: start stream_id[%d] enter\n", ss->sid);
 		msg = virtsnd_pcm_ctl_msg_alloc(ss, VIRTIO_SND_R_PCM_START,
 						GFP_ATOMIC);
 		if (IS_ERR(msg))
 			return PTR_ERR(msg);
 
 		rc = virtsnd_ctl_msg_send(snd, msg);
+		pr_debug("virtsnd_pcm_trigger: start stream_id[%d] exit with rc [%d]\n", ss->sid, rc);
 		pr_info("kpi : SNDRV_PCM_TRIGGER_START: exit\n");
 		return rc;
 	}
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
 	case SNDRV_PCM_TRIGGER_SUSPEND: {
+		pr_debug("virtsnd_pcm_trigger: stop stream_id[%d] enter\n", ss->sid);
 		atomic_set(&ss->xfer_enabled, 0);
 		atomic_set(&ss->suspended, 1);
 
@@ -420,7 +444,9 @@ static int virtsnd_pcm_trigger(struct snd_pcm_substream *substream, int command)
 		if (IS_ERR(msg))
 			return PTR_ERR(msg);
 
-		return virtsnd_ctl_msg_send(snd, msg);
+		rc = virtsnd_ctl_msg_send(snd, msg);
+		pr_debug("virtsnd_pcm_trigger: stop stream_id[%d] exit with rc [%d]\n", ss->sid, rc);
+		return rc;
 	}
 	default: {
 		return -EINVAL;
@@ -565,14 +591,95 @@ virtsnd_pcm_pointer(struct snd_pcm_substream *substream)
 	return (snd_pcm_uframes_t)atomic_read(&ss->hw_ptr);
 }
 
-const struct snd_pcm_ops virtsnd_pcm_ops = {
-	.open = virtsnd_pcm_open,
-	.close = virtsnd_pcm_close,
-	.ioctl = snd_pcm_lib_ioctl,
-	.hw_params = virtsnd_pcm_hw_params,
-	.hw_free = virtsnd_pcm_hw_free,
-	.prepare = virtsnd_pcm_prepare,
-	.trigger = virtsnd_pcm_trigger,
-	.pointer = virtsnd_pcm_pointer,
-	.mmap = virtsnd_pcm_mmap,
+static void virtsnd_pcm_trans_copy(struct snd_pcm_substream *substream,
+				   struct snd_pcm_indirect *rec, size_t bytes)
+{
+	struct virtio_pcm_substream *vss = snd_pcm_substream_chip(substream);
+	virtsnd_pcm_msg_send(vss, rec->sw_data, bytes);
+}
+
+static snd_pcm_uframes_t virtsnd_pcm_pb_pointer(struct snd_pcm_substream *substream)
+{
+	struct virtio_pcm_substream *ss = snd_pcm_substream_chip(substream);
+
+	if (substream->runtime->no_period_wakeup)
+		return virtsnd_pcm_pointer(substream);
+
+	if (atomic_read(&ss->xfer_xrun))
+		return SNDRV_PCM_POS_XRUN;
+
+	return snd_pcm_indirect_playback_pointer(substream, &ss->pcm_indirect,
+			(snd_pcm_uframes_t)atomic_read(&ss->hw_ptr));
+}
+
+static snd_pcm_uframes_t virtsnd_pcm_cp_pointer(struct snd_pcm_substream *substream)
+{
+	struct virtio_pcm_substream *ss = snd_pcm_substream_chip(substream);
+
+	if (substream->runtime->no_period_wakeup)
+		return virtsnd_pcm_pointer(substream);
+
+	if (atomic_read(&ss->xfer_xrun))
+		return SNDRV_PCM_POS_XRUN;
+
+	return snd_pcm_indirect_capture_pointer(substream, &ss->pcm_indirect,
+			(snd_pcm_uframes_t)atomic_read(&ss->hw_ptr));
+}
+
+static int virtsnd_pcm_pb_ack(struct snd_pcm_substream *substream)
+{
+	struct virtio_pcm_substream *ss = snd_pcm_substream_chip(substream);
+	int rc;
+
+	if (substream->runtime->no_period_wakeup)
+		return 0;
+
+	/* remove spin lock here to since alsa core already have stream lock*/
+	rc = snd_pcm_indirect_playback_transfer(substream, &ss->pcm_indirect,
+						virtsnd_pcm_trans_copy);
+
+	return rc;
+}
+
+static int virtsnd_pcm_cp_ack(struct snd_pcm_substream *substream)
+{
+	struct virtio_pcm_substream *ss = snd_pcm_substream_chip(substream);
+	int rc;
+
+	if (substream->runtime->no_period_wakeup)
+		return 0;
+	/* remove spin lock here to since alsa core already have stream lock*/
+	rc = snd_pcm_indirect_capture_transfer(substream, &ss->pcm_indirect,
+					       virtsnd_pcm_trans_copy);
+
+	return rc;
+}
+
+const struct snd_pcm_ops virtsnd_pcm_ops[] = {
+	{
+		// Playback Ops
+		.open = virtsnd_pcm_open,
+		.close = virtsnd_pcm_close,
+		.ioctl = snd_pcm_lib_ioctl,
+		.hw_params = virtsnd_pcm_hw_params,
+		.hw_free = virtsnd_pcm_hw_free,
+		.prepare = virtsnd_pcm_prepare,
+		.trigger = virtsnd_pcm_trigger,
+		.pointer = virtsnd_pcm_pb_pointer,
+		.ack = virtsnd_pcm_pb_ack,
+		.mmap = virtsnd_pcm_mmap,
+	},
+	{
+		// Capture Ops
+		.open = virtsnd_pcm_open,
+		.close = virtsnd_pcm_close,
+		.ioctl = snd_pcm_lib_ioctl,
+		.hw_params = virtsnd_pcm_hw_params,
+		.hw_free = virtsnd_pcm_hw_free,
+		.prepare = virtsnd_pcm_prepare,
+		.trigger = virtsnd_pcm_trigger,
+		.pointer = virtsnd_pcm_cp_pointer,
+		.ack = virtsnd_pcm_cp_ack,
+		.mmap = virtsnd_pcm_mmap,
+	}
 };

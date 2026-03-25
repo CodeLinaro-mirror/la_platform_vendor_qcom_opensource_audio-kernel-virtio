@@ -124,7 +124,6 @@ int virtsnd_pcm_msg_alloc(struct virtio_pcm_substream *substream,
 		sg_init_one(&msg->sgs[PCM_MSG_SG_STATUS], &msg->status,
 			    sizeof(msg->status));
 
-		msg->length = period_bytes;
 
 		msg->desc.addr = (uint64_t)data;
 		msg->desc.offset = period_bytes * i;
@@ -136,51 +135,55 @@ int virtsnd_pcm_msg_alloc(struct virtio_pcm_substream *substream,
 	return 0;
 }
 
-int virtsnd_pcm_msg_send(struct virtio_pcm_substream *substream)
+int virtsnd_pcm_msg_send(struct virtio_pcm_substream *substream, unsigned long offset, unsigned long bytes)
 {
-	struct snd_pcm_runtime *runtime = substream->substream->runtime;
 	struct virtio_snd *snd = substream->snd;
 	struct virtio_device *vdev = snd->vdev;
-
-	int i;
-	int n;
+	unsigned long period_bytes = snd_pcm_lib_period_bytes(substream->substream);
+	unsigned long start, end, i;
 	int32_t hab_socket;
 	int retry_times = 0;
-
-	i = (substream->msg_last_enqueued + 1) % runtime->periods;
-	n = runtime->periods - atomic_read(&substream->msg_count);
-
-	for (; n; --n, i = (i + 1) % runtime->periods) {
+	int rc;
+	start = offset / period_bytes;
+	end = (offset + bytes - 1) / period_bytes;
+	for (i = start; i <= end; i++) {
 		struct virtio_pcm_msg *msg = &substream->msgs[i];
-		int rc;
+		unsigned long n;
 
-		msg->xfer.stream_id = cpu_to_virtio32(vdev, substream->sid);
-		memset(&msg->status, 0, sizeof(msg->status));
-		atomic_inc(&substream->msg_count);
+		n = period_bytes - (offset % period_bytes);
+		if (n > bytes)
+			n = bytes;
 
-		if (substream->direction == SNDRV_PCM_STREAM_PLAYBACK)
+		msg->length += n;
+		if (msg->length == period_bytes) {
+			msg->xfer.stream_id = cpu_to_virtio32(vdev, substream->sid);
+			memset(&msg->status, 0, sizeof(msg->status));
+			atomic_inc(&substream->msg_count);
 
-			hab_socket = snd->queues[VIRTIO_SND_VQ_RX].thread_data.hab_socket; // Playback uses RX
-		else {
-			hab_socket = snd->queues[VIRTIO_SND_VQ_TX].thread_data.hab_socket; // Capture uses TX
-		}
+			if (substream->direction == SNDRV_PCM_STREAM_PLAYBACK)
+
+				hab_socket = snd->queues[VIRTIO_SND_VQ_RX].thread_data.hab_socket; // Playback uses RX
+			else {
+				hab_socket = snd->queues[VIRTIO_SND_VQ_TX].thread_data.hab_socket; // Capture uses TX
+			}
 
  retry_send_packet:
-		rc = habmm_socket_send(hab_socket, msg, sizeof(*msg), HABMM_SOCKET_SEND_FLAGS_NON_BLOCKING);
-		if (rc) {
-			dev_err(&vdev->dev,
-				"SID %u: failed to send I/O message vcid %X ret %d msgsz %zd\n",
-				substream->sid, hab_socket, rc, sizeof(*msg));
-			if ((rc == -EAGAIN) && (retry_times < MAX_SEND_PACKET_RETRY)) {
-				retry_times++;
-				dev_err(&vdev->dev, "send packet retry %d", retry_times);
-				goto retry_send_packet;
+			rc = habmm_socket_send(hab_socket, msg, sizeof(*msg), HABMM_SOCKET_SEND_FLAGS_NON_BLOCKING);
+			if (rc) {
+				dev_err(&vdev->dev,
+					"SID %u: failed to send I/O message vcid %X ret %d msgsz %zd】\n",
+					substream->sid, hab_socket, rc, sizeof(*msg));
+				if ((rc == -EAGAIN) && (retry_times < MAX_SEND_PACKET_RETRY)) {
+					retry_times++;
+					dev_err(&vdev->dev, "send packet retry %d", retry_times);
+					goto retry_send_packet;
+				}
+				atomic_dec(&substream->msg_count);
+				return -EIO;
 			}
-			atomic_dec(&substream->msg_count);
-			return -EIO;
 		}
-
-		substream->msg_last_enqueued = i;
+		offset = 0;
+		bytes -= n;
 	}
 	return 0;
 }
@@ -190,36 +193,43 @@ static void virtsnd_pcm_msg_complete(struct virtio_pcm_msg *msg, size_t size)
 	struct virtio_pcm_substream *substream = msg->substream;
 	struct snd_pcm_runtime *runtime = substream->substream->runtime;
 	snd_pcm_uframes_t hw_ptr;
-
+	u32 msg_length;
+	msg_length = size - sizeof(msg->status);
 	/* TODO: propagate an error to upper layer? */
 	if (le32_to_cpu(msg->status.status) != VIRTIO_SND_S_OK)
+	{
+		pr_err("virtsnd_pcm_msg_complete: get error response\n");
 		return;
+	}
 
 	if (!atomic_read(&substream->first_frame_done)) {
-		pr_info("kpi : virtsnd_pcm_msg_complete first_frame_done\n");
+		pr_info("kpi : virtsnd_pcm_msg_complete first_frame_done for stream_id[%d]\n", substream->sid);
 		atomic_set(&substream->first_frame_done, 1);
 	}
 
 	hw_ptr = (snd_pcm_uframes_t)atomic_read(&substream->hw_ptr);
 
 	if (substream->direction == SNDRV_PCM_STREAM_PLAYBACK) {
-		hw_ptr += runtime->period_size;
+		hw_ptr += msg_length;
 	} else {
 		if (size > sizeof(struct virtio_snd_pcm_status))
 			size -= sizeof(struct virtio_snd_pcm_status);
 		else
 			/* TODO: propagate an error to upper layer? */
-			return;
-
-		hw_ptr += bytes_to_frames(runtime, size);
+			{
+				pr_err("virtsnd_pcm_msg_complete: not enough size[%zu]\n", size);
+				return;
+			}
+		hw_ptr += size;
 	}
 
-	atomic_set(&substream->hw_ptr, (u32)(hw_ptr % runtime->buffer_size));
+	atomic_set(&substream->hw_ptr, (u32)(hw_ptr % snd_pcm_lib_buffer_bytes(substream->substream)));
 	atomic_set(&substream->xfer_xrun, 0);
 
 	runtime->delay = bytes_to_frames(
 		runtime, le32_to_cpu(msg->status.latency_bytes));
 
+	substream->msgs[msg->desc.period].length = 0;
 	snd_pcm_period_elapsed(substream->substream);
 }
 
@@ -229,19 +239,14 @@ static inline void virtsnd_pcm_notify_cb(struct virtio_snd_queue *queue, struct 
 	struct virtio_pcm_substream *substream;
 	unsigned int msg_count;
 	u32 length;
-
-
-
 	spin_lock_irqsave(&queue->lock, flags);
 
 			length = msg->length;
 			substream = msg->substream;
-
 			msg_count = atomic_dec_return(&substream->msg_count);
 
 			if (atomic_read(&substream->xfer_enabled)) {
 				virtsnd_pcm_msg_complete(msg, length);
-				virtsnd_pcm_msg_send(substream);
 			} else if (!msg_count) {
 				wake_up_all(&substream->msg_empty);
 			}
