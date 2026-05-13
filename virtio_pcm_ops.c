@@ -21,6 +21,7 @@
 #include "virtio_card.h"
 #define MAX_VARIANT_NAME 16
 #define WAIT_AVAIL_TIME_MS 500
+#define MSG_DRAIN_TIMEOUT_MS 1000
 
 static char *audio_variant = "audioreach";
 module_param(audio_variant, charp, 0644);
@@ -117,12 +118,19 @@ static int virtsnd_pcm_release(struct virtio_pcm_substream *substream)
 		return PTR_ERR(msg);
 
 	rc = virtsnd_ctl_msg_send_sync(snd, msg);
-	if (!rc)
-		wait_event_interruptible(substream->msg_empty, virtsnd_pcm_released(substream));
-	else{
+	if (!rc) {
+		long wait_ret = wait_event_interruptible_timeout(substream->msg_empty,
+				virtsnd_pcm_released(substream),
+				msecs_to_jiffies(MSG_DRAIN_TIMEOUT_MS));
+		if (wait_ret <= 0) {
+			pr_err("SID %u: drain timed out, msg_count[%d] -> resetting to 0\n",
+			       substream->sid, atomic_read(&substream->msg_count));
+			atomic_set(&substream->msg_count, 0);
+		}
+	} else {
 		pr_err("Stream already closed, reset msg_count\n");
 		atomic_set(&substream->msg_count, 0);
-    }
+	}
 	vsnd_dma_area_unexport(substream, substream->export_id);
 	pr_debug("virtsnd_pcm_release: for stream_id[%d] exit with rc[%d]\n", substream->sid, rc);
 	return rc;
