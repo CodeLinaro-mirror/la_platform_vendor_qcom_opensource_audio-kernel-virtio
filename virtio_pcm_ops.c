@@ -206,7 +206,8 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 		 * If we got here after ops->trigger() was called, the queue may
 		 * still contain messages. In this case, we return an error
 		 */
-		if (atomic_read(&ss->msg_count)) {
+		/* Race condition between pcm queue and ctrl queue,  mgs_count might be less than 0 */
+		if (atomic_read(&ss->msg_count) > 0) {
 			dev_err(&vdev->dev, "SID %u: invalid I/O queue state\n",
 				ss->sid);
 			return -EBADFD;
@@ -366,7 +367,8 @@ static int virtsnd_pcm_prepare(struct snd_pcm_substream *substream)
 		 * If we got here after ops->trigger() was called, the queue may
 		 * still contain messages. In this case, return an error
 		 */
-		if (atomic_read(&ss->msg_count)) {
+		/* Race condition between pcm queue and ctrl queue,  mgs_count might be less than 0 */
+		if (atomic_read(&ss->msg_count) > 0) {
 			dev_err(&vdev->dev, "SID %u: invalid I/O queue state\n",
 				ss->sid);
 			return -EBADFD;
