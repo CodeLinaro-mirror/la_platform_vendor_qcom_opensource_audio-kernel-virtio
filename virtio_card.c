@@ -130,7 +130,7 @@ static int virtsnd_card_info(struct virtio_snd *snd)
 	strscpy(snd->card->id, "viosnd", sizeof(snd->card->id));
 	strscpy(snd->card->driver, "virtio_snd", sizeof(snd->card->driver));
 	strscpy(snd->card->shortname, "VIOSND", sizeof(snd->card->shortname));
-	strscpy(snd->card->longname, "VirtIO Sound Card",sizeof(snd->card->longname));
+	strscpy(snd->card->longname, "virtio-sound-card",sizeof(snd->card->longname));
 
 	return 0;
 }
