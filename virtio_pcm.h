@@ -102,6 +102,7 @@ struct virtio_pcm_substream {
 	u32 pos_buf_export_id; /* this export id is used in push-pull mode only */
 	struct dma_buf_data dma_data[DMA_BUF_INDEX_MAX + 1];
 	atomic_t first_frame_done;
+	struct work_struct xrun_work; /* scheduled from atomic ctx to call snd_pcm_stop_xrun */
 };
 
 struct virtio_pcm_push_pull_pos_buf {

@@ -199,6 +199,18 @@ static void virtsnd_pcm_msg_complete(struct virtio_pcm_msg *msg, size_t size)
 	if (le32_to_cpu(msg->status.status) != VIRTIO_SND_S_OK)
 	{
 		pr_err("virtsnd_pcm_msg_complete: get error response\n");
+		/*
+		 * On capture error (e.g. concurrent CSD2 session setup), schedule
+		 * xrun_work to call snd_pcm_stop_xrun() from process context.
+		 * We cannot call snd_pcm_stop_xrun() directly here because this
+		 * function is called under spin_lock_irqsave (atomic context) and
+		 * snd_pcm_stop_xrun() can sleep. schedule_work() is atomic-safe.
+		 */
+		if (substream->direction == SNDRV_PCM_STREAM_CAPTURE &&
+		    atomic_read(&substream->xfer_enabled)) {
+			atomic_set(&substream->xfer_xrun, 1);
+			schedule_work(&substream->xrun_work);
+		}
 		return;
 	}
 
