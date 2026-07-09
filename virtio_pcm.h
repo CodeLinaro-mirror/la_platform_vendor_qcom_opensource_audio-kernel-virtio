@@ -218,6 +218,8 @@ int virtsnd_pcm_msg_alloc(struct virtio_pcm_substream *substream,
 
 int virtsnd_pcm_msg_send(struct virtio_pcm_substream *substream, unsigned long offset, unsigned long bytes);
 
+void virtsnd_pcm_msg_reset_lengths(struct virtio_pcm_substream *substream);
+
 int vsnd_dma_area_export(struct virtio_pcm_substream *vss,
 			 struct dma_buf *dma_area, size_t dma_bytes,
 			 uint32_t *export_id);
