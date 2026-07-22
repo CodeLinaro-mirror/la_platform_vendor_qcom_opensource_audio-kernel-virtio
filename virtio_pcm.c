@@ -99,6 +99,7 @@ static const struct virtsnd_v2a_rate g_v2a_rate_map[] = {
 	[VIRTIO_SND_PCM_RATE_64000] = { SNDRV_PCM_RATE_64000, 64000 },
 	[VIRTIO_SND_PCM_RATE_88200] = { SNDRV_PCM_RATE_88200, 88200 },
 	[VIRTIO_SND_PCM_RATE_96000] = { SNDRV_PCM_RATE_96000, 96000 },
+	[VIRTIO_SND_PCM_RATE_128000] = { SNDRV_PCM_RATE_KNOT, 128000 },
 	[VIRTIO_SND_PCM_RATE_176400] = { SNDRV_PCM_RATE_176400, 176400 },
 	[VIRTIO_SND_PCM_RATE_192000] = { SNDRV_PCM_RATE_192000, 192000 },
 	[VIRTIO_SND_PCM_RATE_384000] = { SNDRV_PCM_RATE_384000, 384000 }
@@ -355,6 +356,23 @@ int virtsnd_pcm_validate(struct virtio_device *vdev)
 	return 0;
 }
 
+/**
+ * virtsnd_pcm_xrun_work() - Work handler to stop a capture stream on xrun.
+ * @work: xrun work item embedded in virtio_pcm_substream.
+ *
+ * Called from a kernel workqueue (process context) so it is safe to call
+ * snd_pcm_stop_xrun() here, unlike the spinlock-held interrupt context in
+ * virtsnd_pcm_msg_complete() where the xrun was first detected.
+ */
+static void virtsnd_pcm_xrun_work(struct work_struct *work)
+{
+	struct virtio_pcm_substream *substream =
+		container_of(work, struct virtio_pcm_substream, xrun_work);
+
+	if (atomic_read(&substream->xfer_enabled))
+		snd_pcm_stop_xrun(substream->substream);
+}
+
 int virtsnd_pcm_parse_cfg(struct virtio_snd *snd)
 {
 	struct virtio_device *vdev = snd->vdev;
@@ -419,6 +437,7 @@ int virtsnd_pcm_parse_cfg(struct virtio_snd *snd)
 		substream->snd = snd;
 		substream->sid = i;
 		init_waitqueue_head(&substream->msg_empty);
+		INIT_WORK(&substream->xrun_work, virtsnd_pcm_xrun_work);
 
 		rc = virtsnd_pcm_build_hw(substream, &info[i]);
 		if (rc)

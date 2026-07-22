@@ -135,6 +135,17 @@ int virtsnd_pcm_msg_alloc(struct virtio_pcm_substream *substream,
 	return 0;
 }
 
+void virtsnd_pcm_msg_reset_lengths(struct virtio_pcm_substream *substream)
+{
+	struct snd_pcm_runtime *runtime = substream->substream->runtime;
+	unsigned int i;
+
+	if (!substream->msgs)
+		return;
+	for (i = 0; i < runtime->periods; i++)
+		substream->msgs[i].length = 0;
+}
+
 int virtsnd_pcm_msg_send(struct virtio_pcm_substream *substream, unsigned long offset, unsigned long bytes)
 {
 	struct virtio_snd *snd = substream->snd;
@@ -199,6 +210,18 @@ static void virtsnd_pcm_msg_complete(struct virtio_pcm_msg *msg, size_t size)
 	if (le32_to_cpu(msg->status.status) != VIRTIO_SND_S_OK)
 	{
 		pr_err("virtsnd_pcm_msg_complete: get error response\n");
+		/*
+		 * On capture error (e.g. concurrent CSD2 session setup), schedule
+		 * xrun_work to call snd_pcm_stop_xrun() from process context.
+		 * We cannot call snd_pcm_stop_xrun() directly here because this
+		 * function is called under spin_lock_irqsave (atomic context) and
+		 * snd_pcm_stop_xrun() can sleep. schedule_work() is atomic-safe.
+		 */
+		if (substream->direction == SNDRV_PCM_STREAM_CAPTURE &&
+		    atomic_read(&substream->xfer_enabled)) {
+			atomic_set(&substream->xfer_xrun, 1);
+			schedule_work(&substream->xrun_work);
+		}
 		return;
 	}
 
@@ -237,7 +260,7 @@ static inline void virtsnd_pcm_notify_cb(struct virtio_snd_queue *queue, struct 
 {
 	unsigned long flags;
 	struct virtio_pcm_substream *substream;
-	unsigned int msg_count;
+	int msg_count;
 	u32 length;
 	spin_lock_irqsave(&queue->lock, flags);
 
@@ -247,7 +270,7 @@ static inline void virtsnd_pcm_notify_cb(struct virtio_snd_queue *queue, struct 
 
 			if (atomic_read(&substream->xfer_enabled)) {
 				virtsnd_pcm_msg_complete(msg, length);
-			} else if (!msg_count) {
+			} else if (msg_count <= 0) {
 				wake_up_all(&substream->msg_empty);
 			}
 	spin_unlock_irqrestore(&queue->lock, flags);

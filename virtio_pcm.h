@@ -102,6 +102,7 @@ struct virtio_pcm_substream {
 	u32 pos_buf_export_id; /* this export id is used in push-pull mode only */
 	struct dma_buf_data dma_data[DMA_BUF_INDEX_MAX + 1];
 	atomic_t first_frame_done;
+	struct work_struct xrun_work; /* scheduled from atomic ctx to call snd_pcm_stop_xrun */
 };
 
 struct virtio_pcm_push_pull_pos_buf {
@@ -216,6 +217,8 @@ int virtsnd_pcm_msg_alloc(struct virtio_pcm_substream *substream,
 			  unsigned int period_bytes);
 
 int virtsnd_pcm_msg_send(struct virtio_pcm_substream *substream, unsigned long offset, unsigned long bytes);
+
+void virtsnd_pcm_msg_reset_lengths(struct virtio_pcm_substream *substream);
 
 int vsnd_dma_area_export(struct virtio_pcm_substream *vss,
 			 struct dma_buf *dma_area, size_t dma_bytes,
