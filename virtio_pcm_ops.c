@@ -84,6 +84,7 @@ static const struct virtsnd_a2v_rate g_a2v_rate_map[] = {
 	{ 64000, VIRTIO_SND_PCM_RATE_64000 },
 	{ 88200, VIRTIO_SND_PCM_RATE_88200 },
 	{ 96000, VIRTIO_SND_PCM_RATE_96000 },
+	{ 128000, VIRTIO_SND_PCM_RATE_128000 },
 	{ 176400, VIRTIO_SND_PCM_RATE_176400 },
 	{ 192000, VIRTIO_SND_PCM_RATE_192000 },
 	{ 384000, VIRTIO_SND_PCM_RATE_384000 }
@@ -92,7 +93,7 @@ static const struct virtsnd_a2v_rate g_a2v_rate_map[] = {
 /* Conventional and unconventional sample rate supported */
 static unsigned int supported_sample_rates[] = {
 	5512, 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000,
-	64000, 88200, 96000, 176400, 192000, 384000
+	64000, 88200, 96000, 128000, 176400, 192000, 384000
 };
 
 static struct snd_pcm_hw_constraint_list constraints_sample_rates = {
@@ -103,7 +104,8 @@ static struct snd_pcm_hw_constraint_list constraints_sample_rates = {
 
 static inline bool virtsnd_pcm_released(struct virtio_pcm_substream *substream)
 {
-	return atomic_read(&substream->msg_count) == 0;
+	/* Use <= 0 to handle late PVM replies that decrement past 0. */
+	return atomic_read(&substream->msg_count) <= 0;
 }
 
 static int virtsnd_pcm_release(struct virtio_pcm_substream *substream)
@@ -396,6 +398,8 @@ static int virtsnd_pcm_prepare(struct snd_pcm_substream *substream)
 	atomic_set(&ss->msg_count, 0);
 	atomic_set(&ss->suspended, 0);
 
+	virtsnd_pcm_msg_reset_lengths(ss);
+
 	msg = virtsnd_pcm_ctl_msg_alloc(ss, VIRTIO_SND_R_PCM_PREPARE,
 					GFP_KERNEL);
 	if (IS_ERR(msg))
@@ -423,10 +427,16 @@ static int virtsnd_pcm_trigger(struct snd_pcm_substream *substream, int command)
 		if (!(ss->features & (1U << VIRTIO_SND_PCM_F_HOSTLESS)) &&
 		    !(substream->runtime->no_period_wakeup)) {
 			/* remove spin lock here to since alsa core already have stream lock*/
-			if (ss->direction == SNDRV_PCM_STREAM_CAPTURE)
+			if (ss->direction == SNDRV_PCM_STREAM_CAPTURE) {
 				rc = virtsnd_pcm_msg_send(ss, 0, ss->pcm_indirect.hw_buffer_size);
-			if (rc)
-				return rc;
+				if (rc)
+					return rc;
+			} else if (command == SNDRV_PCM_TRIGGER_START) {
+				/* Pre-kick: fill PVM msg_queue before R_PCM_START. */
+				if (virtsnd_pcm_msg_send(ss, 0, ss->pcm_indirect.hw_buffer_size))
+					pr_err("virtsnd_pcm_trigger: pre-kick failed stream_id[%d]\n",
+					       ss->sid);
+			}
 		}
 
 		atomic_set(&ss->xfer_enabled, 1);
@@ -605,6 +615,10 @@ static void virtsnd_pcm_trans_copy(struct snd_pcm_substream *substream,
 				   struct snd_pcm_indirect *rec, size_t bytes)
 {
 	struct virtio_pcm_substream *vss = snd_pcm_substream_chip(substream);
+
+	/* Skip orphan sends before TRIGGER_START; pre-kick fills the queue. */
+	if (!atomic_read(&vss->xfer_enabled))
+		return;
 	virtsnd_pcm_msg_send(vss, rec->sw_data, bytes);
 }
 
@@ -639,10 +653,21 @@ static snd_pcm_uframes_t virtsnd_pcm_cp_pointer(struct snd_pcm_substream *substr
 static int virtsnd_pcm_pb_ack(struct snd_pcm_substream *substream)
 {
 	struct virtio_pcm_substream *ss = snd_pcm_substream_chip(substream);
+	snd_pcm_uframes_t appl_ptr = substream->runtime->control->appl_ptr;
+	snd_pcm_sframes_t diff;
 	int rc;
 
 	if (substream->runtime->no_period_wakeup)
 		return 0;
+
+	/* Handle audio client rewind: appl_ptr moves backward, causing diff < 0 in
+	 * snd_pcm_indirect which returns -EPIPE and triggers XRUN. */
+	diff = (snd_pcm_sframes_t)(appl_ptr - ss->pcm_indirect.appl_ptr);
+	if (diff < 0 &&
+	    diff >= -(snd_pcm_sframes_t)(substream->runtime->boundary / 2)) {
+		ss->pcm_indirect.appl_ptr = appl_ptr;
+		ss->pcm_indirect.sw_ready = 0;
+	}
 
 	/* remove spin lock here to since alsa core already have stream lock*/
 	rc = snd_pcm_indirect_playback_transfer(substream, &ss->pcm_indirect,
