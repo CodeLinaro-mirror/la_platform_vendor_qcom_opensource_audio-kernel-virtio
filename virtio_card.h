@@ -98,6 +98,7 @@ struct virtio_snd {
 	/* --- OpenSynergy extensions --------------------------------------- */
 	struct virtio_kctl_ctx *kctl_ctx;
 	struct work_struct kctl_work;
+	struct completion dc_setup_done;
         /* --- Qualcomm extensions -------------------------------------------*/
         u32 version;
 };
@@ -185,5 +186,7 @@ int virtsnd_chmap_build_devs(struct virtio_snd *snd);
 int virtsnd_dc_parse_cfg(struct virtio_snd *vsnd);
 
 void virtsnd_dc_event(struct virtio_snd *vsnd, struct virtio_snd_event *event);
+
+extern char *audio_variant;
 
 #endif /* VIRTIO_SND_CARD_H */
