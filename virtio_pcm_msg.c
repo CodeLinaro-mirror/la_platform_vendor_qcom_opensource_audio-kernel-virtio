@@ -159,6 +159,13 @@ int virtsnd_pcm_msg_send(struct virtio_pcm_substream *substream, unsigned long o
 	int rc;
 	start = offset / period_bytes;
 	end = (offset + bytes - 1) / period_bytes;
+	if (end >= periods) {
+		/* Out-of-range slot; avoid corrupting adjacent heap memory. */
+		dev_err(&vdev->dev,
+			"SID %u: msg_send range [%lu,%lu) needs slot %lu >= periods[%lu]; dropping\n",
+			substream->sid, offset, offset + bytes, end, periods);
+		return -EINVAL;
+	}
 	for (i = start; i <= end; i++) {
 		struct virtio_pcm_msg *msg = &substream->msgs[i];
 		unsigned long n;
