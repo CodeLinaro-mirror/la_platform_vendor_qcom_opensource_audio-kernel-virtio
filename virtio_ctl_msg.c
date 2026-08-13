@@ -116,7 +116,7 @@ retry_send_packet:
 
 on_failure:
 	virtsnd_ctl_msg_unref(snd->vdev, msg);
-	pr_err("virtsnd_ctl_msg_send: return EIO[%d]\n", EIO);
+	pr_err_ratelimited("virtsnd_ctl_msg_send: return EIO[%d]\n", EIO);
 	return -EIO;
 }
 
@@ -183,7 +183,7 @@ on_failure:
 	virtsnd_ctl_msg_unref(vdev, msg);
 	if(code != 0)
 	{
-		pr_err("virtsnd_ctl_msg_send_sync: error [%d]\n", code);
+		pr_err_ratelimited("virtsnd_ctl_msg_send_sync: error [%d]\n", code);
 	}
 	return code;
 }
