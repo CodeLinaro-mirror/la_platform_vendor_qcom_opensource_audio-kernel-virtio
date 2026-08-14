@@ -281,6 +281,19 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 				return rc;
 			}
 		}
+	} else if (!is_mmap_noirq && periods != ss->nmsg) {
+		/*
+		 * A prior hw_params() already set up runtime->dma_area and sized
+		 * ss->msgs[] to the old periods count, and this call did not go
+		 * through hw_free() in between. Silently keeping the stale msgs[]
+		 * array while runtime->periods (and every other periods-bound loop)
+		 * moves to the new count lets those loops index past msgs[]'s real
+		 * allocation. Reject instead of risking that OOB write.
+		 */
+		dev_err(&vdev->dev,
+			"SID %u: periods[%u] != allocated msgs count[%u] with dma_area already set; rejecting\n",
+			ss->sid, periods, ss->nmsg);
+		return -EINVAL;
 	}
 
 	msg = virtsnd_pcm_ctl_msg_alloc(ss, VIRTIO_SND_R_PCM_SET_PARAMS,
