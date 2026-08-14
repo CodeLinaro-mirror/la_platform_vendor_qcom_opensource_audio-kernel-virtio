@@ -93,6 +93,7 @@ struct virtio_pcm_substream {
 	atomic_t xfer_xrun;
 	atomic_t suspended;
 	struct virtio_pcm_msg *msgs;
+	unsigned int nmsg; /* number of elements currently allocated in msgs[] */
 	struct snd_pcm_indirect pcm_indirect;
 	atomic_t msg_count;
 	wait_queue_head_t msg_empty;
