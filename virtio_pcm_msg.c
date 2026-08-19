@@ -86,12 +86,14 @@ int virtsnd_pcm_msg_alloc(struct virtio_pcm_substream *substream,
 	if (substream->msgs) {
 		devm_kfree(&vdev->dev, substream->msgs);
 		substream->msgs = NULL;
+		substream->nmsg = 0;
 	}
 
 	substream->msgs = devm_kcalloc(&vdev->dev, nmsg,
 				       sizeof(*substream->msgs), GFP_KERNEL);
 	if (!substream->msgs)
 		return -ENOMEM;
+	substream->nmsg = nmsg;
 
 	if (IS_ERR_OR_NULL((void*)substream->dma_data[DMA_BUF_DATA].dma_buf))
 		return -ENOMEM;
@@ -137,12 +139,11 @@ int virtsnd_pcm_msg_alloc(struct virtio_pcm_substream *substream,
 
 void virtsnd_pcm_msg_reset_lengths(struct virtio_pcm_substream *substream)
 {
-	struct snd_pcm_runtime *runtime = substream->substream->runtime;
 	unsigned int i;
 
 	if (!substream->msgs)
 		return;
-	for (i = 0; i < runtime->periods; i++)
+	for (i = 0; i < substream->nmsg; i++)
 		substream->msgs[i].length = 0;
 }
 
@@ -151,6 +152,7 @@ int virtsnd_pcm_msg_send(struct virtio_pcm_substream *substream, unsigned long o
 	struct virtio_snd *snd = substream->snd;
 	struct virtio_device *vdev = snd->vdev;
 	unsigned long period_bytes = snd_pcm_lib_period_bytes(substream->substream);
+	unsigned long periods = substream->nmsg;
 	unsigned long start, end, i;
 	int32_t hab_socket;
 	int retry_times = 0;
@@ -252,6 +254,11 @@ static void virtsnd_pcm_msg_complete(struct virtio_pcm_msg *msg, size_t size)
 	runtime->delay = bytes_to_frames(
 		runtime, le32_to_cpu(msg->status.latency_bytes));
 
+	if (msg->desc.period >= substream->nmsg) {
+		pr_err("virtsnd_pcm_msg_complete: SID %u stale period[%u] >= nmsg[%u]; dropping\n",
+		       substream->sid, msg->desc.period, substream->nmsg);
+		return;
+	}
 	substream->msgs[msg->desc.period].length = 0;
 	snd_pcm_period_elapsed(substream->substream);
 }
