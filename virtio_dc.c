@@ -142,7 +142,8 @@ static int virtsnd_dc_put(struct snd_kcontrol *kcontrol,
 
 	msg->request_ext_size = sizeof(*ucontrol);
 
-	return virtsnd_ctl_msg_send_sync(snd, msg);
+	virtsnd_ctl_msg_send(snd, msg);
+	return 0;
 }
 
 static int vsnd_dc_dma_area_export(struct virtio_snd *snd,
@@ -391,11 +392,16 @@ static int virtsnd_dc_tlv_op(struct snd_kcontrol *kcontrol, int op_flag,
 		msg->request_ext_size = size;
 	}
 
+	if (cmd != VIRTIO_SND_R_DC_TLV_READ) {
+		virtsnd_ctl_msg_send(snd, msg);
+		devm_kfree(&vdev->dev, tlv);
+		return 0;
+	}
+
 	code = virtsnd_ctl_msg_send_sync(snd, msg);
 	if (!code)
-		if (cmd == VIRTIO_SND_R_DC_TLV_READ)
-			if (copy_to_user(utlv, tlv, size))
-				code = -EFAULT;
+		if (copy_to_user(utlv, tlv, size))
+			code = -EFAULT;
 
 on_failure:
 	devm_kfree(&vdev->dev, tlv);
