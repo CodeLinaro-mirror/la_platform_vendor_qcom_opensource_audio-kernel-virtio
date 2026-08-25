@@ -129,7 +129,7 @@ int virtsnd_pcm_msg_alloc(struct virtio_pcm_substream *substream,
 		msg->desc.offset = period_bytes * i;
 		msg->desc.period = i;
 		msg->desc.export_id = substream->export_id;
-		msg->desc.dma_bytes = dma_bytes;
+		msg->desc.dma_bytes = (size_t)nmsg * period_bytes;
 	}
 
 	return 0;
