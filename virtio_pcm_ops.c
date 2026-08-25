@@ -134,6 +134,8 @@ static int virtsnd_pcm_release(struct virtio_pcm_substream *substream)
 		atomic_set(&substream->msg_count, 0);
 	}
 	vsnd_dma_area_unexport(substream, substream->export_id);
+	if (substream->pos_buf_export_id)
+		vsnd_dma_area_unexport(substream, substream->pos_buf_export_id);
 	pr_debug("virtsnd_pcm_release: for stream_id[%d] exit with rc[%d]\n", substream->sid, rc);
 	return rc;
 }
@@ -484,8 +486,15 @@ static int virtsnd_pcm_mmap(struct snd_pcm_substream *substream, struct vm_area_
 	unsigned long len = vma->vm_end - vma->vm_start;
 	unsigned long offset = vma->vm_pgoff * PAGE_SIZE;
 	struct file *fptr = NULL;
-	int data_fd = dma_buf_fd(vss->dma_data[DMA_BUF_DATA].dma_buf, O_CLOEXEC);
+	int data_fd;
 	int pos_fd = 0;
+
+	get_dma_buf(vss->dma_data[DMA_BUF_DATA].dma_buf);
+	data_fd = dma_buf_fd(vss->dma_data[DMA_BUF_DATA].dma_buf, O_CLOEXEC);
+	if (data_fd < 0) {
+		dma_buf_put(vss->dma_data[DMA_BUF_DATA].dma_buf);
+		return data_fd;
+	}
 
 	/* set write permission for data buffer fd so userspace can write to it */
 	fptr = fget(data_fd);
@@ -495,6 +504,7 @@ static int virtsnd_pcm_mmap(struct snd_pcm_substream *substream, struct vm_area_
 	}
 
 	fptr->f_mode = fptr->f_mode | FMODE_WRITE;
+	fput(fptr);
 
 	if (substream->runtime->no_period_wakeup) {
 
@@ -507,7 +517,12 @@ static int virtsnd_pcm_mmap(struct snd_pcm_substream *substream, struct vm_area_
 			return -ENOMEM;
 
 		/* determine fd position buffers after allocation */
+		get_dma_buf(vss->dma_data[DMA_BUF_POS].dma_buf);
 		pos_fd = dma_buf_fd(vss->dma_data[DMA_BUF_POS].dma_buf, O_CLOEXEC);
+		if (pos_fd < 0) {
+			dma_buf_put(vss->dma_data[DMA_BUF_POS].dma_buf);
+			return -EBADFD;
+		}
 
 		/* export data and position buffers to PVM */
 		rc = vsnd_dma_area_export(vss, vss->dma_data[DMA_BUF_DATA].dma_buf,
