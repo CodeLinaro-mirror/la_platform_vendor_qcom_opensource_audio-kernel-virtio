@@ -158,6 +158,11 @@ static int virtsnd_pcm_open(struct snd_pcm_substream *substream)
 					SNDRV_PCM_HW_PARAM_PERIOD_BYTES, 64);
 				snd_pcm_hw_constraint_step(substream->runtime, 0,
 					SNDRV_PCM_HW_PARAM_BUFFER_BYTES, 64);
+				/* Ensure buffer_size is an exact multiple of period_size. */
+				ret = snd_pcm_hw_constraint_integer(substream->runtime,
+					SNDRV_PCM_HW_PARAM_PERIODS);
+				if (ret < 0)
+					pr_err("snd_pcm_hw_constraint_integer failed\n");
 				atomic_set(&ss->suspended, 0);
 
 				if (stream->substreams[substream->number]->hw.rates & SNDRV_PCM_RATE_KNOT) {
@@ -260,6 +265,15 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 	if (vformat == -1 || vrate == -1)
 		return -EINVAL;
 
+	/* msgs[] has `periods` slots; buffer_bytes must divide evenly. */
+	if (!is_mmap_noirq && (size_t)periods * period_bytes != buffer_bytes) {
+		dev_err(&vdev->dev,
+			"SID %u: buffer_bytes[%u] is not periods[%u] * period_bytes[%u] (=%zu); rejecting\n",
+			ss->sid, buffer_bytes, periods, period_bytes,
+			(size_t)periods * period_bytes);
+		return -EINVAL;
+	}
+
 	if (!runtime->dma_area) {
 		/* set runtime buffer to prealloced dma buf*/
 		dma_buf->dev.type = SNDRV_DMA_TYPE_DEV;
@@ -281,6 +295,19 @@ static int virtsnd_pcm_hw_params(struct snd_pcm_substream *substream,
 				return rc;
 			}
 		}
+	} else if (!is_mmap_noirq && periods != ss->nmsg) {
+		/*
+		 * A prior hw_params() already set up runtime->dma_area and sized
+		 * ss->msgs[] to the old periods count, and this call did not go
+		 * through hw_free() in between. Silently keeping the stale msgs[]
+		 * array while runtime->periods (and every other periods-bound loop)
+		 * moves to the new count lets those loops index past msgs[]'s real
+		 * allocation. Reject instead of risking that OOB write.
+		 */
+		dev_err(&vdev->dev,
+			"SID %u: periods[%u] != allocated msgs count[%u] with dma_area already set; rejecting\n",
+			ss->sid, periods, ss->nmsg);
+		return -EINVAL;
 	}
 
 	msg = virtsnd_pcm_ctl_msg_alloc(ss, VIRTIO_SND_R_PCM_SET_PARAMS,
