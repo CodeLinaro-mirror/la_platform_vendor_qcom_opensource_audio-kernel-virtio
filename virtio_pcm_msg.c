@@ -205,6 +205,8 @@ static void virtsnd_pcm_msg_complete(struct virtio_pcm_msg *msg, size_t size)
 	struct snd_pcm_runtime *runtime = substream->substream->runtime;
 	snd_pcm_uframes_t hw_ptr;
 	u32 msg_length;
+	if (!runtime)
+		return;
 	msg_length = size - sizeof(msg->status);
 	/* TODO: propagate an error to upper layer? */
 	if (le32_to_cpu(msg->status.status) != VIRTIO_SND_S_OK)
