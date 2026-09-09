@@ -23,7 +23,7 @@
 #define WAIT_AVAIL_TIME_MS 500
 #define MSG_DRAIN_TIMEOUT_MS 1000
 
-static char *audio_variant = "audioreach";
+char *audio_variant = "audioreach";
 module_param(audio_variant, charp, 0644);
 MODULE_PARM_DESC(audio_variant, "The audio framework being used from either audioreach or awe");
 
