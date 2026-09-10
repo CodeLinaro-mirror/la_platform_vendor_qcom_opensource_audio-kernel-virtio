@@ -34,11 +34,15 @@
  * @kctl: Kernel device control.
  * @info: Device control information.
  * @enum_values: Values for the ENUMERATED control type.
+ * @cached_value: Pre-fetched control value from DC_READ_ALL. Owned by this
+ *                struct; use xchg() to atomically take ownership before read/free.
+ *                Allocated with kmalloc(), freed with kfree().
  */
 struct virtio_kctl {
 	struct snd_kcontrol *kctl;
 	struct virtio_snd_dc_info *info;
 	struct virtio_snd_dc_enum_value *enum_values;
+	struct snd_ctl_elem_value *cached_value;
 };
 
 /**
@@ -64,7 +68,7 @@ struct virtio_snd_dc_info {
 	struct snd_ctl_elem_info elem_info;
 };
 
-DECLARE_COMPLETION(dc_setup_done);
+/* dc_setup_done is now per-instance in struct virtio_snd (see virtio_card.h) */
 
 static int virtsnd_dc_info(struct snd_kcontrol *kcontrol,
 			   struct snd_ctl_elem_info *uinfo)
@@ -95,10 +99,29 @@ static int virtsnd_dc_get(struct snd_kcontrol *kcontrol,
 {
 	struct virtio_snd *snd = kcontrol->private_data;
 	struct virtio_device *vdev = snd->vdev;
+	struct virtio_kctl_ctx *ctx = snd->kctl_ctx;
+	struct virtio_kctl *kctl = &ctx->kctls[kcontrol->private_value];
 	struct virtio_snd_msg *msg;
 	struct virtio_snd_dc_hdr *hdr;
 	unsigned int subcid = snd_ctl_get_ioff(kcontrol, &ucontrol->id);
 	struct scatterlist sg;
+
+	/* Atomically take ownership of the prefetched cache entry.
+	 * xchg on the pointer itself is the sole atomic gate — only the thread
+	 * that gets a non-NULL value from xchg will access and free it,
+	 * eliminating any race or double-free regardless of concurrent get() calls.
+	 */
+	{
+		struct snd_ctl_elem_value *cv = xchg(&kctl->cached_value, NULL);
+
+		if (cv) {
+			memcpy(ucontrol, cv, sizeof(*ucontrol));
+			devm_kfree(&vdev->dev, cv);
+			return 0;
+		}
+	}
+
+	/* Legacy path: individual DC_READ via HAB */
 	msg = virtsnd_ctl_msg_alloc(vdev, sizeof(*hdr),
 				    sizeof(struct virtio_snd_hdr), GFP_KERNEL);
 	if (IS_ERR(msg))
@@ -363,18 +386,21 @@ static int virtsnd_dc_tlv_op(struct snd_kcontrol *kcontrol, int op_flag,
 	}
 	}
 
+	/* Allocate tlv buffer BEFORE msg so failure returns without leaking msg */
+	tlv = devm_kzalloc(&vdev->dev, size, GFP_KERNEL);
+	if (!tlv)
+		return -ENOMEM;
+
 	msg = virtsnd_ctl_msg_alloc(vdev, sizeof(*hdr),
 				    sizeof(struct virtio_snd_hdr), GFP_KERNEL);
-	if (IS_ERR(msg))
+	if (IS_ERR(msg)) {
+		devm_kfree(&vdev->dev, tlv);
 		return PTR_ERR(msg);
+	}
 
 	hdr = sg_virt(&msg->sg_request);
 	hdr->hdr.code = cpu_to_virtio32(vdev, cmd);
 	hdr->control_id = cpu_to_virtio16(vdev, kcontrol->private_value);
-
-	tlv = devm_kzalloc(&vdev->dev, size, GFP_KERNEL);
-	if (!tlv)
-		return -ENOMEM;
 
 	if (cmd == VIRTIO_SND_R_DC_TLV_READ) {
 		sg_init_one(&sg_response_ext, tlv, size);
@@ -455,6 +481,100 @@ static int virtsnd_dc_query_enum_info(struct virtio_snd *snd, unsigned int cid,
 	return 0;
 }
 
+/**
+ * virtsnd_dc_read_all() - Batch-read all device control values via DC_READ_ALL.
+ * @snd: VirtIO sound device.
+ *
+ * Sends VIRTIO_SND_R_DC_READ_ALL requests in batches (respecting HAB_BUFFER_SIZE)
+ * to prefetch all control values into each kctl's cached_value. This avoids
+ * individual DC_READ round-trips during control registration/first-access.
+ *
+ * Returns 0 on success, negative error code on failure.
+ */
+static int virtsnd_dc_read_all(struct virtio_snd *snd)
+{
+	struct virtio_kctl_ctx *ctx = snd->kctl_ctx;
+	struct virtio_device *vdev = snd->vdev;
+	unsigned int nkctls = ctx->nkctls;
+	struct snd_ctl_elem_value *values;
+	int max_per_batch;
+	int controls_remaining;
+	int code;
+
+	/*
+	 * Calculate how many snd_ctl_elem_value entries fit in one HAB buffer,
+	 * accounting for the query_info request header and response header.
+	 */
+	max_per_batch = (HAB_BUFFER_SIZE - sizeof(struct virtio_snd_query_info)
+			 - sizeof(struct virtio_snd_hdr))
+			/ sizeof(struct snd_ctl_elem_value);
+	if (max_per_batch <= 0) {
+		dev_err(&vdev->dev, "DC_READ_ALL: snd_ctl_elem_value too large for HAB buffer\n");
+		return -EINVAL;
+	}
+
+	/* Allocate temporary buffer for the full set of values */
+	values = devm_kcalloc(&vdev->dev, nkctls, sizeof(*values), GFP_KERNEL);
+	if (!values)
+		return -ENOMEM;
+
+	controls_remaining = nkctls;
+
+	while (controls_remaining > 0) {
+		int batch = controls_remaining < max_per_batch ?
+			    controls_remaining : max_per_batch;
+		int start_id = nkctls - controls_remaining;
+
+		code = virtsnd_ctl_query_info(snd, VIRTIO_SND_R_DC_READ_ALL,
+					      start_id, batch,
+					      sizeof(struct snd_ctl_elem_value),
+					      &values[start_id]);
+		if (code) {
+			unsigned int j;
+
+			dev_warn(&vdev->dev,
+				 "DC_READ_ALL failed at start_id=%d batch=%d: %d (falling back to individual reads)\n",
+				 start_id, batch, code);
+			/* Free any cached entries from prior successful batches */
+			for (j = 0; j < (unsigned int)start_id; j++) {
+				struct snd_ctl_elem_value *cv =
+					xchg(&ctx->kctls[j].cached_value, NULL);
+				devm_kfree(&vdev->dev, cv);
+			}
+			devm_kfree(&vdev->dev, values);
+			return code;
+		}
+
+		/* Cache values from this batch immediately using kmalloc */
+		for (int j = 0; j < batch; j++) {
+			unsigned int idx = start_id + j;
+			struct virtio_kctl *kctl = &ctx->kctls[idx];
+			struct snd_ctl_elem_value *cv;
+
+			cv = devm_kmalloc(&vdev->dev, sizeof(*cv), GFP_KERNEL);
+			if (!cv) {
+				dev_warn(&vdev->dev,
+					 "DC_READ_ALL: failed to alloc cache for kctl %u\n", idx);
+				continue;
+			}
+			memcpy(cv, &values[idx], sizeof(*cv));
+			/* Publish with release semantics — pairs with xchg (acquire) in
+			 * virtsnd_dc_get(), ensuring the memcpy above is fully visible to
+			 * any concurrent reader before the pointer is exposed.
+			 */
+			smp_store_release(&kctl->cached_value, cv);
+		}
+
+		controls_remaining -= batch;
+	}
+
+	devm_kfree(&vdev->dev, values);
+
+	dev_info(&vdev->dev, "DC_READ_ALL: successfully prefetched %u control values\n", nkctls);
+
+	return 0;
+}
+
 static void virtsnd_dc_work(struct work_struct *work)
 {
 	struct virtio_snd *snd =
@@ -491,10 +611,14 @@ static void virtsnd_dc_work(struct work_struct *work)
 		controls_remaining -= num_requested;
 	}
 
+	/*
+	 * Phase 1: Populate kctl metadata (info + enum values) for all controls.
+	 * This must complete before DC_READ_ALL so that kctl->info is valid
+	 * if virtsnd_dc_get() is ever called concurrently.
+	 */
 	for (i = 0; i < ctx->nkctls; ++i) {
 		struct virtio_kctl *kctl = &ctx->kctls[i];
 		struct snd_ctl_elem_info *elem_info = &info[i].elem_info;
-		struct snd_kcontrol_new kctl_new;
 
 		kctl->info = &info[i];
 
@@ -506,12 +630,35 @@ static void virtsnd_dc_work(struct work_struct *work)
 			if (code)
 				continue;
 		}
+	}
+
+	/*
+	 * Phase 2: On non-AWE variants, prefetch all control values in batch
+	 * to avoid individual DC_READ round-trips during first access.
+	 * Called after Phase 1 so kctl->info is fully populated.
+	 * If DC_READ_ALL fails (e.g., old PVM without support), fall back
+	 * gracefully to per-control reads at get() time.
+	 */
+	if (strncmp(audio_variant, "awe", strlen("awe"))) {
+		code = virtsnd_dc_read_all(snd);
+		if (code)
+			dev_info(&vdev->dev,
+				 "DC_READ_ALL unavailable, will use individual DC_READ\n");
+	}
+
+	/*
+	 * Phase 3: Register kcontrols with ALSA.
+	 */
+	for (i = 0; i < ctx->nkctls; ++i) {
+		struct virtio_kctl *kctl = &ctx->kctls[i];
+		struct snd_ctl_elem_info *elem_info = &info[i].elem_info;
+		struct snd_kcontrol_new kctl_new;
 
 		memset(&kctl_new, 0, sizeof(kctl_new));
 
 		kctl_new.iface = elem_info->id.iface;
 		if (kctl_new.iface == SNDRV_CTL_ELEM_IFACE_PCM)
-			kctl_new.device = le32_to_cpu(info->hdr.hda_fn_nid);
+			kctl_new.device = le32_to_cpu(info[i].hdr.hda_fn_nid);
 
 		kctl_new.name = elem_info->id.name;
 		kctl_new.index = elem_info->id.index;
@@ -552,7 +699,7 @@ static void virtsnd_dc_work(struct work_struct *work)
 	}
 
 	atomic_set(&ctx->events_enabled, 1);
-	complete(&dc_setup_done);
+	complete(&snd->dc_setup_done);
 }
 
 int virtsnd_dc_parse_cfg(struct virtio_snd *snd)
@@ -607,9 +754,9 @@ int virtsnd_dc_parse_cfg(struct virtio_snd *snd)
 
 	snd->kctl_ctx = ctx;
 	INIT_WORK(&snd->kctl_work, virtsnd_dc_work);
-
+	init_completion(&snd->dc_setup_done);
 	schedule_work(&snd->kctl_work);
-	wait_for_completion(&dc_setup_done);
+	wait_for_completion(&snd->dc_setup_done);
 
 	return 0;
 }
