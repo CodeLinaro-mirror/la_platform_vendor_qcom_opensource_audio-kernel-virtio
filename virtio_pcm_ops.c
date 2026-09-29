@@ -23,7 +23,7 @@
 #define WAIT_AVAIL_TIME_MS 500
 #define MSG_DRAIN_TIMEOUT_MS 1000
 
-static char *audio_variant = "audioreach";
+char *audio_variant = "audioreach";
 module_param(audio_variant, charp, 0644);
 MODULE_PARM_DESC(audio_variant, "The audio framework being used from either audioreach or awe");
 
@@ -577,7 +577,7 @@ static int virtsnd_pcm_mmap(struct snd_pcm_substream *substream, struct vm_area_
 		}
 	}
 
-	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+	vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
 	if (offset >= len) {
 		dev_err(&vdev->dev, "%s: offset is too large, offset %lu, len %lu", __func__, offset, len);
 		return -EINVAL;
@@ -631,6 +631,7 @@ virtsnd_pcm_pointer(struct snd_pcm_substream *substream)
 			}
 
 			hw_frame_ptr = bytes_to_frames(substream->runtime, read_index);
+
 		}
 		return (hw_frame_ptr/period_size) * period_size;
 	}

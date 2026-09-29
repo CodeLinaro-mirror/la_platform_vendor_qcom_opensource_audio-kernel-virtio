@@ -302,6 +302,8 @@ static int vsnd_kthread(void *d)
 				}
 				continue;
 			}
+			/* Non-ENODEV error: buff is stale/partial, skip dispatch */
+			continue;
 		} else {
 			pr_debug("%s mmid %d ok size %d\n",
 				__func__, p->mmid, sz);

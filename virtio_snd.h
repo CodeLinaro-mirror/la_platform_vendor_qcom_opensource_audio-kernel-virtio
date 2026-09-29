@@ -144,6 +144,9 @@ enum {
 	VIRTIO_SND_R_SHMEM_UNMAP,
 
 	VIRTIO_SND_R_VERSION,
+
+	/* Batched device control read (all values in one transaction) */
+	VIRTIO_SND_R_DC_READ_ALL,
 };
 
 /* common header */
