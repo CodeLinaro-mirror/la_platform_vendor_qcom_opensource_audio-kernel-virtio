@@ -255,7 +255,7 @@ int virtsnd_alloc_dmabuf(struct virtio_pcm_substream *substream, size_t size, en
 		rc = -ENOMEM;
 		goto err;
 	}
-
+	
 	heap = dma_heap_find("system");
 	if (!heap)
 		goto err;
@@ -290,6 +290,23 @@ put_dma_buf:
 	}
 
 	return rc;
+}
+
+void virtsnd_free_dmabuf(struct virtio_pcm_substream *substream, enum dma_buf_index index)
+{
+	struct dma_buf *dma_buf = substream->dma_data[index].dma_buf;
+
+	if (!substream->dma_data[index].vmap || !dma_buf)
+		return;
+
+	dma_resv_lock(dma_buf->resv, NULL);
+	dma_buf_vunmap(dma_buf, substream->dma_data[index].vmap);
+	dma_resv_unlock(dma_buf->resv);
+	dma_buf_put(dma_buf);
+	substream->dma_data[index].dma_buf = NULL;
+
+	kfree(substream->dma_data[index].vmap);
+	substream->dma_data[index].vmap = NULL;
 }
 
 struct virtio_pcm *virtsnd_pcm_find(struct virtio_snd *snd, unsigned int nid)

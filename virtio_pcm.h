@@ -227,6 +227,7 @@ int vsnd_dma_area_export(struct virtio_pcm_substream *vss,
 void vsnd_process_pcm_msg(struct virtio_snd_queue *queue, struct virtio_pcm_msg *msg);
 
 int virtsnd_alloc_dmabuf(struct virtio_pcm_substream *substream, size_t size, enum dma_buf_index index);
+void virtsnd_free_dmabuf(struct virtio_pcm_substream *substream, enum dma_buf_index index);
 
 void vsnd_dma_area_unexport(struct virtio_pcm_substream *vss, uint32_t export_id);
 

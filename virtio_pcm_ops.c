@@ -371,6 +371,10 @@ static int virtsnd_pcm_hw_free(struct snd_pcm_substream *substream)
 
 	if (atomic_read(&substream->mmap_count))
 		atomic_set(&substream->mmap_count, 0);
+
+	if (!strncmp(audio_variant, "audioreach_vio", strlen("audioreach_vio")))
+		virtsnd_free_dmabuf(ss, DMA_BUF_POS);
+
 	pr_debug("virtsnd_pcm_hw_free: for stream_id[%d] exit\n", ss->sid);
 	return rc;
 }
